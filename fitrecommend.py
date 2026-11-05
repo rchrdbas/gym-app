@@ -60,6 +60,31 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
 
+st.markdown("""
+<style>
+
+/* Button animation */
+.stButton > button {
+    transition: all 0.25s ease-in-out;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+/* Hover effect */
+.stButton > button:hover {
+    transform: translateY(-3px) scale(1.03);
+    box-shadow: 0 5px 15px rgba(0, 255, 170, 0.3);
+    border-color: #00FFAA;
+    color: #00FFAA;
+}
+
+/* Click effect */
+.stButton > button:active {
+    transform: scale(0.96);
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 def new_progression():
     """Baseline state for progressive overload engine. Memory of how much difficulty increased"""
