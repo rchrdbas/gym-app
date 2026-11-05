@@ -172,6 +172,7 @@ def apply_fitpro_vibe():
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
+apply_fitpro_vibe()
 
 st.markdown("""
 <style>
