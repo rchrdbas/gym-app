@@ -59,57 +59,119 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
-def apply_fitrecommend_template():
-    """Injects a full-page background, glassmorphism containers, and custom typography."""
+def apply_fitpro_vibe():
+    """Injects a high-end matte dark theme with emerald green accents inspired by FitPro."""
     custom_css = """
     <style>
-    /* 1. Full-page background image with a dark readability gradient */
+    /* 1. Deep Matte Dark Background with a subtle top ambient glow (No images) */
     .stApp {
-        background: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.95)), 
-                    url("https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1470&auto=format&fit=crop");
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
+        background: radial-gradient(circle at 50% 0%, #112217 0%, #0B0E0C 55%, #070908 100%) !important;
+        color: #E2E8F0;
     }
     
-    /* 2. Glassmorphism effect for all bordered containers */
+    /* 2. Sleek Card Containers (for bordered containers) */
     [data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: rgba(38, 39, 48, 0.4) !important;
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 12px;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        background: #141A16 !important;
+        border: 1px solid rgba(0, 230, 118, 0.15) !important;
+        border-radius: 16px !important;
+        padding: 18px !important;
+        box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6) !important;
     }
 
-    /* 3. Hide Streamlit's developer top menu and footer */
+    /* 3. Modern Neon/Emerald Accent Buttons */
+    .stButton > button {
+        background: #00E676 !important;
+        color: #050B07 !important;
+        font-weight: 700 !important;
+        border: none !important;
+        border-radius: 30px !important;
+        padding: 0.55rem 1.25rem !important;
+        transition: all 0.25s ease-in-out !important;
+        box-shadow: 0 4px 15px rgba(0, 230, 118, 0.25) !important;
+    }
+    
+    .stButton > button:hover {
+        background: #33EB91 !important;
+        box-shadow: 0 6px 20px rgba(0, 230, 118, 0.5) !important;
+        transform: translateY(-1px);
+    }
+
+    /* Secondary / Disabled Buttons */
+    .stButton > button:disabled {
+        background: #1C241F !important;
+        color: #4A5568 !important;
+        box-shadow: none !important;
+    }
+
+    /* 4. Pill-style Navigation Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #111613;
+        padding: 6px;
+        border-radius: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 20px;
+        padding: 6px 16px;
+        color: #A0AEC0;
+        font-weight: 500;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background-color: #00E676 !important;
+        color: #050B07 !important;
+        font-weight: 700;
+    }
+
+    /* 5. Metrics & Stat Counters */
+    [data-testid="stMetricValue"] {
+        color: #00E676 !important;
+        font-weight: 800 !important;
+        font-size: 2.1rem !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        color: #94A3B8 !important;
+        font-size: 0.9rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* 6. Typography Styling */
+    h1 {
+        font-weight: 800 !important;
+        color: #FFFFFF !important;
+        letter-spacing: -0.5px;
+    }
+    
+    h2, h3 {
+        color: #F1F5F9 !important;
+        font-weight: 600 !important;
+    }
+
+    /* 7. Input fields, Selectboxes & Sliders */
+    .stSelectbox div[data-baseweb="select"], 
+    .stNumberInput input, 
+    .stTextInput input, 
+    .stTextArea textarea {
+        background-color: #141A16 !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 10px !important;
+        color: #FFFFFF !important;
+    }
+
+    /* 8. Hide Streamlit Chrome */
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* 4. Custom gradient styling for the main App Title (h1) */
-    h1 {
-        text-align: center;
-        font-weight: 800;
-        background: -webkit-linear-gradient(45deg, #00FFAA, #0088FF);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        padding-bottom: 10px;
-    }
-    
-    /* 5. Subtitle styling */
-    h3 {
-        text-align: center;
-        color: #E0E0E0;
-        font-weight: 300;
-    }
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
 
-# Run the template immediately when the app loads
-apply_fitrecommend_template()
-
+# Run the template styling
+apply_fitpro_vibe()
 st.markdown("""
 <style>
 
