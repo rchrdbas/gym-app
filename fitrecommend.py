@@ -1422,14 +1422,34 @@ def page_progress():
     show_flash()
 
     # NEW: a real average instead of a hard-coded number.
-    scale = {"Too Easy": 1, "Perfect": 3, "Too Hard": 5}
-    log = st.session_state.session_log
-    average = f"{np.mean([scale[e['difficulty']] for e in log]):.1f} / 5" if log else "—"
+    # Calculate actual workout statistics
+log = st.session_state.session_log
 
-    col1, col2 = st.columns(2)
-    col1.metric("Workouts Completed", st.session_state.completed_workouts)
-    col2.metric("Average Difficulty", average)
-    st.metric("Current Week", st.session_state.week_number)
+# Average user rating (1–5)
+average_rating = (
+    f"{np.mean([e['rating'] for e in log]):.1f} / 5"
+    if log else "—"
+)
+
+with st.container(border=True):
+    st.subheader("Your Workout Statistics")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Workouts Completed",
+        st.session_state.completed_workouts
+    )
+
+    col2.metric(
+        "Average Workout Rating",
+        average_rating
+    )
+
+    col3.metric(
+        "Current Week",
+        st.session_state.week_number
+    )
 
     prog = st.session_state.progression
     st.subheader("Current Overload Settings")
