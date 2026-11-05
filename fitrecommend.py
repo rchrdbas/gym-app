@@ -59,6 +59,56 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
+def apply_fitrecommend_template():
+    """Injects a full-page background, glassmorphism containers, and custom typography."""
+    custom_css = """
+    <style>
+    /* 1. Full-page background image with a dark readability gradient */
+    .stApp {
+        background: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.95)), 
+                    url("https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1470&auto=format&fit=crop");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+    
+    /* 2. Glassmorphism effect for all bordered containers */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: rgba(38, 39, 48, 0.4) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    }
+
+    /* 3. Hide Streamlit's developer top menu and footer */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* 4. Custom gradient styling for the main App Title (h1) */
+    h1 {
+        text-align: center;
+        font-weight: 800;
+        background: -webkit-linear-gradient(45deg, #00FFAA, #0088FF);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        padding-bottom: 10px;
+    }
+    
+    /* 5. Subtitle styling */
+    h3 {
+        text-align: center;
+        color: #E0E0E0;
+        font-weight: 300;
+    }
+    </style>
+    """
+    st.markdown(custom_css, unsafe_allow_html=True)
+
+# Run the template immediately when the app loads
+apply_fitrecommend_template()
 
 st.markdown("""
 <style>
