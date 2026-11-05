@@ -60,7 +60,7 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
 def apply_fitpro_vibe():
-    """Injects a high-end matte dark theme with green underline tabs inspired by FitPro."""
+    """Injects a high-end matte dark theme with emerald green accents inspired by FitPro."""
     custom_css = """
     <style>
     /* 1. Deep Matte Dark Background with a subtle top ambient glow (No images) */
@@ -103,29 +103,26 @@ def apply_fitpro_vibe():
         box-shadow: none !important;
     }
 
-    /* 4. Underline-Style Navigation Tabs (Line under active section) */
+    /* 4. Pill-style Navigation Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 20px;
-        background-color: transparent !important;
-        padding: 0px 0px 4px 0px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 0px;
+        gap: 8px;
+        background-color: #111613;
+        padding: 6px;
+        border-radius: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
     }
 
     .stTabs [data-baseweb="tab"] {
-        background-color: transparent !important;
-        border-radius: 0px !important;
-        padding: 8px 4px !important;
-        color: #A0AEC0 !important;
+        border-radius: 20px;
+        padding: 6px 16px;
+        color: #A0AEC0;
         font-weight: 500;
-        border-bottom: 3px solid transparent !important;
     }
 
     .stTabs [aria-selected="true"] {
-        background-color: transparent !important;
-        color: #00E676 !important;
-        font-weight: 700 !important;
-        border-bottom: 3px solid #00E676 !important;
+        background-color: #00E676 !important;
+        color: #050B07 !important;
+        font-weight: 700;
     }
 
     /* 5. Metrics & Stat Counters */
@@ -172,8 +169,9 @@ def apply_fitpro_vibe():
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
-apply_fitpro_vibe()
 
+# Run the template styling
+apply_fitpro_vibe()
 st.markdown("""
 <style>
 
