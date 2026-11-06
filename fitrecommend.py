@@ -63,6 +63,20 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
 
+def apply_background():
+    """Injects only the FitPro matte dark ambient gradient background."""
+    custom_css = """
+    <style>
+    .stApp {
+        background: radial-gradient(circle at 50% 0%, #112217 0%, #0B0E0C 55%, #070908 100%) !important;
+    }
+    </style>
+    """
+    st.markdown(custom_css, unsafe_allow_html=True)
+
+# Run the background styling
+apply_background()
+
 st.markdown("""
 <style>
 
