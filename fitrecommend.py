@@ -1406,7 +1406,8 @@ def page_home():
     st.markdown("<p style='text-align: center;'>Get a workout plan designed for your goals, fitness level and equipment.</p>", unsafe_allow_html=True)
 
     show_flash()
-    account_box()
+    if not st.session_state.get("user_id"):   # guests: sign-in panel at the top
+        account_box()
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
@@ -1417,13 +1418,18 @@ def page_home():
             if st.button("View Current Plan", use_container_width=True):
                 navigate_to('plan')
                 st.rerun()
-        if st.button("My Progress & Download Data", use_container_width=True):
+        if st.button("My Progress", use_container_width=True):
             navigate_to('progress')
             st.rerun()
         # --- NEW TRAINING GUIDE BUTTON ---
         if st.button("Training Guide", use_container_width=True):
             navigate_to('learn')
             st.rerun()
+
+    if st.session_state.get("user_id"):       # signed in: "Signed in as ..." + Log out at the bottom
+        st.write("")
+        st.divider()
+        account_box()
 
 
 def page_profile():
@@ -1677,20 +1683,6 @@ def page_feedback():
         st.rerun()
 
 
-def build_export():
-    """Everything from this session as JSON text (no name or ID is collected)."""
-    data = {
-        "profile": st.session_state.profile,
-        "week_number": st.session_state.week_number,
-        "completed_workouts": st.session_state.completed_workouts,
-        "session_log": st.session_state.session_log,
-        "progression": st.session_state.progression,
-        "excluded_exercises": sorted(st.session_state.blacklisted_exercises),
-        "weekly_plan": st.session_state.weekly_plan.to_dict(orient="records"),
-    }
-    return json.dumps(data, indent=2, default=str)
-
-
 def page_progress():
     if st.button("⬅ Back to Home"):
         navigate_to('home')
@@ -1726,12 +1718,6 @@ def page_progress():
             st.markdown(f"* {entry}")
     else:
         st.write("Complete a week of sessions to see your plan adapt.")
-
-    st.subheader("Download My Session Data")
-    st.caption("Nothing is saved on the server. Download your plan and feedback as a file "
-               "(it contains no name or ID) if you want to keep it or send it to the researcher.")
-    st.download_button("⬇ Download session data (JSON)", data=build_export(),
-                       file_name="my_workout_session.json", mime="application/json")
 
     if st.session_state.blacklisted_exercises:
         st.subheader("Excluded for Joint Pain")
