@@ -9,9 +9,12 @@
 # `st.session_state`.
 # =============================================================================
 
+import hashlib
 import json
 import re
+import secrets
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -59,145 +62,7 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
-def apply_fitpro_vibe():
-    """Injects a high-end matte dark theme with green underline tabs inspired by FitPro."""
-    custom_css = """
-    <style>
-    /* 1. Deep Matte Dark Background with a subtle top ambient glow (No images) */
-    .stApp {
-        background: radial-gradient(circle at 50% 0%, #112217 0%, #0B0E0C 55%, #070908 100%) !important;
-        color: #E2E8F0;
-    }
-    
-    /* 2. Sleek Card Containers (for bordered containers) */
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background: #141A16 !important;
-        border: 1px solid rgba(0, 230, 118, 0.15) !important;
-        border-radius: 16px !important;
-        padding: 18px !important;
-        box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6) !important;
-    }
 
-    /* 3. Modern Neon/Emerald Accent Buttons */
-    .stButton > button {
-        background: #00E676 !important;
-        color: #050B07 !important;
-        font-weight: 700 !important;
-        border: none !important;
-        border-radius: 30px !important;
-        padding: 0.55rem 1.25rem !important;
-        transition: all 0.25s ease-in-out !important;
-        box-shadow: 0 4px 15px rgba(0, 230, 118, 0.25) !important;
-    }
-    
-    .stButton > button:hover {
-        background: #33EB91 !important;
-        box-shadow: 0 6px 20px rgba(0, 230, 118, 0.5) !important;
-        transform: translateY(-1px);
-    }
-
-    /* Secondary / Disabled Buttons */
-    .stButton > button:disabled {
-        background: #1C241F !important;
-        color: #4A5568 !important;
-        box-shadow: none !important;
-    }
-
-    /* 4. Underline-Style Navigation Tabs (Line under active section) */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 20px;
-        background-color: transparent !important;
-        padding: 0px 0px 4px 0px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 0px;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        background-color: transparent !important;
-        border-radius: 0px !important;
-        padding: 8px 4px !important;
-        color: #A0AEC0 !important;
-        font-weight: 500;
-        border-bottom: 3px solid transparent !important;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background-color: transparent !important;
-        color: #00E676 !important;
-        font-weight: 700 !important;
-        border-bottom: 3px solid #00E676 !important;
-    }
-
-    /* 5. Metrics & Stat Counters */
-    [data-testid="stMetricValue"] {
-        color: #00E676 !important;
-        font-weight: 800 !important;
-        font-size: 2.1rem !important;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        color: #94A3B8 !important;
-        font-size: 0.9rem !important;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    /* 6. Typography Styling */
-    h1 {
-        font-weight: 800 !important;
-        color: #FFFFFF !important;
-        letter-spacing: -0.5px;
-    }
-    
-    h2, h3 {
-        color: #F1F5F9 !important;
-        font-weight: 600 !important;
-    }
-
-    /* 7. Input fields, Selectboxes & Sliders */
-    .stSelectbox div[data-baseweb="select"], 
-    .stNumberInput input, 
-    .stTextInput input, 
-    .stTextArea textarea {
-        background-color: #141A16 !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 10px !important;
-        color: #FFFFFF !important;
-    }
-
-    /* 8. Hide Streamlit Chrome */
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
-    </style>
-    """
-    st.markdown(custom_css, unsafe_allow_html=True)
-apply_fitpro_vibe()
-st.markdown("""
-<style>
-
-/* Button animation */
-.stButton > button {
-    transition: all 0.25s ease-in-out;
-    border-radius: 10px;
-    font-weight: 600;
-}
-
-/* Hover effect */
-.stButton > button:hover {
-    transform: translateY(-3px) scale(1.03);
-    box-shadow: 0 5px 15px rgba(0, 255, 170, 0.3);
-    border-color: #00FFAA;
-    color: #00FFAA;
-}
-
-/* Click effect */
-.stButton > button:active {
-    transform: scale(0.96);
-}
-
-</style>
-""", unsafe_allow_html=True)
 
 def new_progression():
     """Baseline state for progressive overload engine. Memory of how much difficulty increased"""
@@ -227,6 +92,8 @@ _defaults = {
     "blacklisted_exercises": set(),     # NEW: names removed forever after "Joint Pain"
     "blacklisted_patterns": set(),      # NEW: (joint_action, muscle_group) pairs removed forever
     "feedback_day": None,               # NEW: which day the feedback form is about
+    "user_id": None,                    # NEW: logged-in user (None = guest)
+    "nickname": None,
     "flash": None,                      # NEW: one-time message shown after a rerun
 }
 
@@ -1267,11 +1134,240 @@ def record_tag(name, tag):
 # 3. UI PAGES
 # =============================================================================
 
+# =============================================================================
+# PERSISTENT STORAGE (nickname + PIN login, Supabase)
+# -----------------------------------------------------------------------------
+# Needs two secrets (Streamlit Cloud -> app Settings -> Secrets, or locally in
+# .streamlit/secrets.toml, which must NOT be pushed to GitHub):
+#     SUPABASE_URL = "https://xxxx.supabase.co"
+#     SUPABASE_KEY = "your secret / service_role key"
+# Without them the app still works, in guest mode only.
+# Tables: users, user_state, session_ratings, workout_feedback (SQL in supabase_setup.sql).
+# =============================================================================
+PIN_ITERATIONS = 200_000
+
+# session_state keys that are saved for a logged-in user
+PERSISTED_KEYS = ["profile", "feedback", "weekly_plan", "completed_workouts", "progression",
+                  "week_number", "week_feedback", "session_log",
+                  "blacklisted_exercises", "blacklisted_patterns"]
+
+
+@st.cache_resource
+def _supabase_client():
+    from supabase import create_client          # raises if the package is missing
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])  # raises if secrets are missing
+
+
+def get_supabase():
+    """One shared Supabase client, or None if it is not configured / not installed.
+    (Failures are not cached, so adding the secrets later works without a code change.)"""
+    try:
+        return _supabase_client()
+    except Exception:
+        return None
+
+
+def storage_ready():
+    return get_supabase() is not None
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _hash_pin(pin, salt):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), PIN_ITERATIONS).hex()
+
+
+def db_create_user(nickname, pin):
+    """Returns (user_id, error_message)."""
+    sb = get_supabase()
+    taken = sb.table("users").select("id").eq("nickname", nickname).execute().data
+    if taken:
+        return None, "That nickname is already taken. Please choose another one."
+    salt = secrets.token_hex(16)
+    try:
+        rows = sb.table("users").insert({
+            "nickname": nickname, "pin_salt": salt, "pin_hash": _hash_pin(pin, salt),
+            "consent_at": _now(), "created_at": _now(),
+        }).execute().data
+    except Exception as error:
+        if "23505" in str(error) or "duplicate" in str(error).lower():
+            return None, "That nickname is already taken. Please choose another one."
+        raise
+    return rows[0]["id"], None
+
+
+def db_check_login(nickname, pin):
+    rows = (get_supabase().table("users").select("id, pin_salt, pin_hash")
+            .eq("nickname", nickname).execute().data)
+    if rows and secrets.compare_digest(_hash_pin(pin, rows[0]["pin_salt"]), rows[0]["pin_hash"]):
+        return rows[0]["id"]
+    return None
+
+
+def db_save_state(user_id, state_json):
+    sb = get_supabase()
+    sb.table("user_state").upsert({
+        "user_id": user_id, "state_json": json.loads(state_json), "updated_at": _now(),
+    }, on_conflict="user_id").execute()
+    ratings = [{"user_id": user_id, "week": e.get("week"), "day": e.get("day"),
+                "difficulty": e.get("difficulty"), "rating": e.get("rating"),
+                "notes": str(e.get("notes", "")), "saved_at": _now()}
+               for e in st.session_state.session_log]
+    if ratings:
+        sb.table("session_ratings").upsert(ratings, on_conflict="user_id,week,day").execute()
+
+
+def db_load_state(user_id):
+    rows = get_supabase().table("user_state").select("state_json").eq("user_id", user_id).execute().data
+    if not rows:
+        return None
+    data = rows[0]["state_json"]
+    return json.loads(data) if isinstance(data, str) else data
+
+
+def db_log_feedback(user_id, nickname, entry):
+    """Append-only log of every feedback submission (one row per click), for analysis."""
+    get_supabase().table("workout_feedback").insert({
+        "user_id": user_id, "username": nickname, "week": entry["week"], "day": entry["day"],
+        "rating": entry["rating"], "difficulty": entry["difficulty"], "notes": entry["notes"],
+    }).execute()
+
+
+def serialise_state():
+    data = {}
+    for key in PERSISTED_KEYS:
+        value = st.session_state[key]
+        if key == "weekly_plan":
+            value = value.to_dict(orient="records")
+        elif key == "blacklisted_exercises":
+            value = sorted(value)
+        elif key == "blacklisted_patterns":
+            value = sorted([list(p) for p in value])
+        data[key] = value
+    return json.dumps(data, sort_keys=True, default=str)
+
+
+def restore_state(data):
+    """Put a saved blob back into session_state (missing keys keep their defaults)."""
+    for key in PERSISTED_KEYS:
+        if key not in data:
+            continue
+        value = data[key]
+        if key == "weekly_plan":
+            value = pd.DataFrame(value)
+        elif key == "blacklisted_exercises":
+            value = set(value)
+        elif key == "blacklisted_patterns":
+            value = {tuple(p) for p in value}
+        st.session_state[key] = value
+
+
+def reset_to_defaults():
+    for key, value in _defaults.items():
+        st.session_state[key] = value() if callable(value) else (value.copy() if hasattr(value, "copy") else value)
+    st.session_state.progression = new_progression()
+    st.session_state.profile = dict(default_profile)
+
+
+def autosave():
+    """Called at the end of every run: saves only when something changed."""
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        return
+    blob = serialise_state()
+    digest = hashlib.sha256(blob.encode()).hexdigest()
+    if digest != st.session_state.get("_saved_digest"):
+        try:
+            db_save_state(user_id, blob)
+            st.session_state["_saved_digest"] = digest
+        except Exception as error:
+            st.warning(f"Could not save your progress right now ({type(error).__name__}). It will retry on your next click.")
+
+
+def account_box():
+    """Login / register / guest panel on the home page."""
+    if st.session_state.get("user_id"):
+        c1, c2 = st.columns([3, 1])
+        c1.success(f"Signed in as **{st.session_state.nickname}**. Your progress is saved automatically.")
+        if c2.button("Log out", use_container_width=True):
+            autosave()
+            reset_to_defaults()
+            st.session_state.user_id = None
+            st.session_state.nickname = None
+            st.session_state["_saved_digest"] = None
+            st.rerun()
+        return
+
+    if not storage_ready():
+        st.caption("Accounts are not available right now (database not configured), so you are using the app as a guest.")
+        return
+
+    with st.expander("🔐 Sign in to save your progress (optional)", expanded=False):
+        st.caption("Use a nickname and a 4–6 digit PIN, not your real name. Without signing in you can still use "
+                   "the app as a guest, but your progress is lost when the page is refreshed.")
+        tab_login, tab_register = st.tabs(["Sign in", "Create account"])
+        with tab_login:
+            nick = st.text_input("Nickname", key="login_nick").strip().lower()
+            pin = st.text_input("PIN", type="password", key="login_pin")
+            if st.button("Sign in", key="btn_login"):
+                try:
+                    user_id = db_check_login(nick, pin) if nick and pin else None
+                except Exception as error:
+                    st.error(f"Could not reach the database ({type(error).__name__}). Please try again.")
+                    return
+                if user_id is None:
+                    st.error("Nickname or PIN is incorrect.")
+                else:
+                    reset_to_defaults()
+                    try:
+                        saved = db_load_state(user_id)
+                    except Exception:
+                        saved = None
+                    if saved:
+                        restore_state(saved)
+                    st.session_state.user_id, st.session_state.nickname = user_id, nick
+                    st.session_state["_saved_digest"] = None
+                    st.session_state.flash = ("success", f"Welcome back, {nick}!" + (" Your saved plan has been loaded." if saved else ""))
+                    st.rerun()
+        with tab_register:
+            nick = st.text_input("Choose a nickname (3–20 letters or numbers)", key="reg_nick").strip().lower()
+            pin = st.text_input("Choose a PIN (4–6 digits)", type="password", key="reg_pin")
+            consent = st.checkbox(
+                "I agree that my nickname, profile answers, workout plan and session ratings are stored by this app "
+                "for the purpose of this final year project. No real name or contact details are collected.",
+                key="reg_consent")
+            if st.button("Create account", key="btn_register"):
+                if not re.fullmatch(r"[a-z0-9_]{3,20}", nick):
+                    st.error("Nickname must be 3–20 letters, numbers or underscores.")
+                elif not re.fullmatch(r"\d{4,6}", pin):
+                    st.error("PIN must be 4–6 digits.")
+                elif not consent:
+                    st.error("Please tick the consent box to create an account.")
+                else:
+                    try:
+                        user_id, error = db_create_user(nick, pin)
+                    except Exception as exc:
+                        user_id, error = None, f"Could not reach the database ({type(exc).__name__}). Please try again."
+                    if error:
+                        st.error(error)
+                    else:
+                        # keep whatever the guest already did, and save it under the new account
+                        st.session_state.user_id, st.session_state.nickname = user_id, nick
+                        st.session_state["_saved_digest"] = None
+                        st.session_state.flash = ("success", f"Account created. Signed in as {nick}.")
+                        st.rerun()
+
+
 def page_home():
     st.markdown("<h1 style='text-align: center;'>FitRecommend</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>Personalized Workout Recommendation System</h3>", unsafe_allow_html=True)
     st.write("")
     st.markdown("<p style='text-align: center;'>Get a workout plan designed for your goals, fitness level and equipment.</p>", unsafe_allow_html=True)
+
+    show_flash()
+    account_box()
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
@@ -1517,6 +1613,11 @@ def page_feedback():
         st.session_state.session_log = [
             e for e in st.session_state.session_log if not (e["week"] == week and e["day"] == day)
         ] + [{"week": week, "day": day, "difficulty": difficulty, "rating": rating, "notes": notes}]
+        if st.session_state.get("user_id"):          # only signed-in (consenting) users are logged
+            try:
+                db_log_feedback(st.session_state.user_id, st.session_state.nickname, st.session_state.session_log[-1])
+            except Exception:
+                pass                                 # the full state is still saved by autosave()
 
         # Joint pain: ban now, and clean up the rest of this week's plan.
         for name in joint_pain:
@@ -1564,11 +1665,11 @@ def page_progress():
     log = st.session_state.session_log
     average = f"{np.mean([scale[e['difficulty']] for e in log]):.1f} / 5" if log else "—"
 
-    col1, col2 = st.columns(2)
-    col1.metric("Workouts Completed", st.session_state.completed_workouts)
-    col2.metric("Average Difficulty", average)
-    st.metric("Current Week", st.session_state.week_number)
-
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Workouts Completed", st.session_state.completed_workouts)
+        col2.metric("Average Difficulty", average)
+        col3.metric("Current Week", st.session_state.week_number)
 
     prog = st.session_state.progression
     st.subheader("Current Overload Settings")
@@ -1685,3 +1786,4 @@ pages = {
 }
 
 pages.get(st.session_state.page, page_home)()
+autosave()
