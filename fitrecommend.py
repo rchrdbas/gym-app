@@ -63,45 +63,6 @@ SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 # --- Configuration & Initialization ---
 st.set_page_config(page_title="FitRecommend", layout="centered")
 
-def apply_background():
-    """Injects only the FitPro matte dark ambient gradient background."""
-    custom_css = """
-    <style>
-    .stApp {
-        background: radial-gradient(circle at 50% 0%, #112217 0%, #0B0E0C 55%, #070908 100%) !important;
-    }
-    </style>
-    """
-    st.markdown(custom_css, unsafe_allow_html=True)
-
-# Run the background styling
-apply_background()
-
-st.markdown("""
-<style>
-
-/* Button animation */
-.stButton > button {
-    transition: all 0.25s ease-in-out;
-    border-radius: 10px;
-    font-weight: 600;
-}
-
-/* Hover effect */
-.stButton > button:hover {
-    transform: translateY(-3px) scale(1.03);
-    box-shadow: 0 5px 15px rgba(0, 255, 170, 0.3);
-    border-color: #00FFAA;
-    color: #00FFAA;
-}
-
-/* Click effect */
-.stButton > button:active {
-    transform: scale(0.96);
-}
-
-</style>
-""", unsafe_allow_html=True)
 
 def new_progression():
     """Baseline state for progressive overload engine. Memory of how much difficulty increased"""
@@ -1405,7 +1366,6 @@ def page_home():
     st.write("")
     st.markdown("<p style='text-align: center;'>Get a workout plan designed for your goals, fitness level and equipment.</p>", unsafe_allow_html=True)
 
-    show_flash()
     if not st.session_state.get("user_id"):   # guests: sign-in panel at the top
         account_box()
 
@@ -1429,6 +1389,7 @@ def page_home():
     if st.session_state.get("user_id"):       # signed in: "Signed in as ..." + Log out at the bottom
         st.write("")
         st.divider()
+        show_flash()                           # "Account created..." / "Welcome back..." message
         account_box()
 
 
