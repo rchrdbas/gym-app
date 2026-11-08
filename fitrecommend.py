@@ -271,225 +271,32 @@ def infer_joint_action(name, category):
     return "other"
 
 
+KB_FILE = "exercise_kb_final.csv"   # produced by the preprocessing notebook (dp_final.ipynb)
+
+
 @st.cache_data
 def load_and_build_kb():
+    """Load the knowledge base prepared OFFLINE in dp_final.ipynb.
+    All preprocessing (Free Exercise DB cleaning, megaGym rating filter, hand-written
+    warm-ups / cool-downs, compound / unilateral / joint-action labels) happens there.
+    This function only reads the result and restores the column types."""
+    path = Path(__file__).with_name(KB_FILE)
     try:
-        exercise = pd.read_csv(Path(__file__).with_name("megaGymDataset.csv"))
+        kb = pd.read_csv(path, keep_default_na=False)
     except FileNotFoundError:
-        exercise = pd.DataFrame()
+        st.error(f"{KB_FILE} was not found next to the app. Run dp_final.ipynb and upload the file.")
+        st.stop()
 
-    def first_col(frame, candidates):
-        return next((c for c in candidates if c in frame.columns), None)
-
-    title_col = first_col(exercise, ["Title", "Exercise", "Name"])
-    body_col = first_col(exercise, ["BodyPart", "Target Muscle", "Muscle"])
-    equipment_col = first_col(exercise, ["Equipment", "equipment_needed"])
-    level_col = first_col(exercise, ["Level", "Difficulty", "difficulty_level"])
-    type_col = first_col(exercise, ["Type", "exercise_category"])
-    desc_col = first_col(exercise, ["Desc", "Description", "desc"])
-
-    if not exercise.empty:
-        if desc_col is not None:
-            exercise = exercise.dropna(subset=[desc_col])
-            exercise = exercise[exercise[desc_col].astype(str).str.strip().ne("")]
-        if "Rating" in exercise.columns:
-            ratings = pd.to_numeric(exercise["Rating"], errors="coerce")
-            exercise = exercise[ratings > 8.5]
-        if "RatingDesc" in exercise.columns:
-            exercise = exercise.drop(columns=["RatingDesc"])
-        exercise = exercise.dropna()
-        if type_col is not None:
-            excluded_types = ["Olympic Weightlifting", "Strongman", "Powerlifting"]
-            exercise = exercise[~exercise[type_col].isin(excluded_types)]
-        if equipment_col is not None:
-            equipment_values = exercise[equipment_col].astype(str).str.strip().str.lower()
-            exercise = exercise[equipment_values != "other"]
-
-    if title_col is None:
-        source = pd.DataFrame()
-    else:
-        source = exercise.dropna(subset=[title_col]).drop_duplicates(subset=[title_col]).copy()
-
-    def text_value(row, column, default=""):
-        if column is None or pd.isna(row.get(column, np.nan)):
-            return default
-        value = str(row[column]).strip()
-        return value if value and value.lower() != "nan" else default
-
-    def normalise_level(value):
-        value = str(value).lower()
-        if "beginner" in value or "novice" in value: return "beginner"
-        if "intermediate" in value: return "intermediate"
-        if "expert" in value or "advanced" in value: return "advanced"
-        return "beginner"
-
-    # The CSV says "Dumbbell"/"Bands" but the profile form says "Dumbbells"/
-    # "Resistance Band". Without this mapping the equipment filter never matched.
-    equipment_aliases = {"dumbbell": "dumbbells", "bands": "resistance band", "band": "resistance band"}
-
-    def normalise_equipment(value):
-        value = str(value).strip().lower()
-        if value in {"", "none", "nan", "body only", "bodyweight"}: return "bodyweight"
-        return equipment_aliases.get(value, value)
-
-    def classify_category(row):
-        raw_type = text_value(row, type_col).lower()
-        body = text_value(row, body_col).lower()
-        title = text_value(row, title_col).lower()
-        combined = f"{raw_type} {body} {title}"
-        if any(w in combined for w in ["cardio", "running", "cycling", "jump rope", "rowing machine"]):
-            return "cardio"
-        if "plyometric" in raw_type:
-            return "plyometrics"
-        #dynamic warm-up movements get their own category.
-        if any(w in combined for w in ["mobility", "dynamic", "warm-up", "warm up", "warmup"]):
-            return "mobility"
-        if any(w in combined for w in ["stretch", "flexibility", "yoga"]):
-            return "flexibility"
-        return "resistance"
-
-    records = []
-    for _, row in source.iterrows():
-        equipment = normalise_equipment(text_value(row, equipment_col, "bodyweight"))
-
-        actual_desc = text_value(row, desc_col, "")
-        if not actual_desc:
-            continue
-
-        records.append({
-            "exercise_name": text_value(row, title_col, "Unnamed exercise"),
-            "exercise_category": classify_category(row),
-            "target_muscle": text_value(row, body_col, "full body").title(),
-            "major_muscle_group": major_muscle_group(text_value(row, body_col, "full body")),
-            "equipment_needed": equipment,
-            "location_suitability": ["gym"] if equipment != "bodyweight" else ["home", "gym", "outdoor"],
-            "difficulty_level": normalise_level(text_value(row, level_col, "beginner")),
-            "instructions": actual_desc
-        })
-
-    # ---- Supplemental exercises (hand-written so the app always has the basics) ----
-    anywhere = ["home", "outdoor", "gym"]
-    supplemental = [
-        # --- original basics ---
-        ("Brisk Walking", "cardio", "full body", "bodyweight", anywhere, "beginner", None),
-        ("Stationary Cycling", "cardio", "legs", "stationary bike", ["gym"], "beginner", None),
-        ("Jump Rope", "cardio", "full body", "jump rope", anywhere, "intermediate", None),
-        ("Standing Chest Stretch", "flexibility", "chest", "bodyweight", anywhere, "beginner",
-         "1. Clasp your hands behind your back.\n2. Straighten your arms and lift them slightly.\n3. Open your chest and hold the stretch.\n4. Breathe slowly."),
-        ("Bodyweight Squat", "resistance", "legs", "bodyweight", anywhere, "beginner", None),
-        ("Wall Push-up", "resistance", "chest", "bodyweight", anywhere, "beginner", None),
-        ("Glute Bridge", "resistance", "glutes", "bodyweight", anywhere, "beginner", None),
-        ("Bench Press", "resistance", "chest", "barbell", ["gym"], "intermediate", None),
-        ("Lat Pulldown", "resistance", "back", "machine", ["gym"], "beginner", None),
-        
-        # --- unilateral + isolation strength options ---
-        ("Reverse Lunge", "resistance", "quads", "bodyweight", anywhere, "beginner",
-         "1. Stand tall with hands on hips.\n2. Step one foot back and lower until both knees are about 90 degrees.\n3. Push through the front heel to stand.\n4. Complete all reps on one side, then switch."),
-        ("Single-Leg Glute Bridge", "resistance", "glutes", "bodyweight", anywhere, "beginner",
-         "1. Lie on your back, knees bent, one leg extended.\n2. Press through the planted heel to lift your hips.\n3. Squeeze your glute at the top.\n4. Lower slowly; complete reps, then switch legs."),
-        ("Single-Arm Dumbbell Row", "resistance", "back", "dumbbells", ["home", "gym"], "beginner",
-         "1. Place one hand and knee on a bench, dumbbell in the other hand.\n2. Keep your back flat.\n3. Pull the dumbbell toward your hip.\n4. Lower with control; complete reps, then switch arms."),
-        ("Calf Raise", "resistance", "calves", "bodyweight", anywhere, "beginner",
-         "1. Stand with feet hip-width apart.\n2. Rise onto your toes as high as you can.\n3. Pause for a second.\n4. Lower slowly."),
-        ("Dead Bug", "resistance", "core", "bodyweight", anywhere, "beginner",
-         "1. Lie on your back, arms up, knees bent over hips.\n2. Lower the opposite arm and leg toward the floor.\n3. Keep your lower back pressed down.\n4. Return and alternate sides."),
-        
-        # =====================================================================
-        # --- NEW: dynamic warm-up (category 'mobility') - FROM MUSCLE & STRENGTH
-        # =====================================================================
-        ("Fast-Paced Walk", "mobility", "full body", "bodyweight", anywhere, "beginner", 
-         "Walk at a brisk pace to elevate your core body temperature and blood flow."),
-        ("Plantar Fascia w/ Lacrosse Ball", "mobility", "calves", "lacrosse ball", anywhere, "beginner", 
-         "While standing or seated, roll a lacrosse ball under the arch of each foot to release tension."),
-        ("Donkey Calf Raise", "mobility", "calves", "bodyweight", anywhere, "beginner", 
-         "Hinge at the hips (placing hands on a bench or wall) and perform controlled calf raises."),
-        ("Dumbbell Goblet Squat", "mobility", "quads", "dumbbells", ["home", "gym"], "beginner", 
-         "Hold a dumbbell vertically against your chest and perform a controlled squat to open the hips."),
-        ("Bodyweight Walking Lunge", "mobility", "quads", "bodyweight", anywhere, "beginner", 
-         "Step forward into a lunge, alternating legs as you walk forward."),
-        ("Side Plank", "mobility", "core", "bodyweight", anywhere, "beginner", 
-         "Prop yourself up on one forearm and the side of your foot, keeping your body perfectly straight."),
-        ("Plyometric Push Up", "mobility", "chest", "bodyweight", anywhere, "intermediate", 
-         "Perform a push-up with enough explosive force to briefly lift your hands off the ground."),
-        ("Rack Lat Stretch", "mobility", "back", "machine", ["gym"], "beginner", 
-         "Hold onto a squat rack or sturdy pole, hinge at the hips, and pull back gently to stretch your lats."),
-        ("Bodyweight Standing Calf Raise", "mobility", "calves", "bodyweight", anywhere, "beginner", 
-         "Stand tall and push up onto your toes, then lower with control to warm up the ankles."),
-        ("IT Band Foam Roller", "mobility", "quads", "foam roll", ["home", "gym"], "beginner", 
-         "Lie on your side and slowly roll the foam roller along your outer thigh."),
-        ("Bodyweight Single-Leg Deadlift", "mobility", "hamstrings", "bodyweight", anywhere, "beginner", 
-         "Hinge at the hips on one leg, keeping your back straight and the other leg extended behind you."),
-        ("Prisoner Squat", "mobility", "quads", "bodyweight", anywhere, "beginner", 
-         "Place your hands behind your head and perform a bodyweight squat."),
-        ("Prisoner Squat (Hold at the Bottom)", "mobility", "quads", "bodyweight", anywhere, "beginner", 
-         "Perform a prisoner squat and hold the bottom position isometrically to improve hip mobility."),
-        ("Superman", "mobility", "back", "bodyweight", anywhere, "beginner", 
-         "Lie face down and lift your arms and legs off the floor simultaneously, squeezing the lower back."),
-        ("Plank", "mobility", "core", "bodyweight", anywhere, "beginner", 
-         "Hold a push-up position on your forearms with a straight back and tight core."),
-        ("Band Pull-Apart", "mobility", "shoulders", "resistance band", anywhere, "beginner", 
-         "Hold a resistance band with straight arms and pull it apart until it touches your chest."),
-        ("Warm-up Push Up", "mobility", "chest", "bodyweight", anywhere, "beginner", 
-         "Lower your body until your chest is just above the floor, then push back up."),
-        ("Warm-up Bench Dips", "mobility", "triceps", "bench", ["gym", "home"], "beginner", 
-         "Place your hands on a bench behind you, lower your hips toward the floor, then press back up."),
-        ("Arm Circles (Clockwise)", "mobility", "shoulders", "bodyweight", anywhere, "beginner", 
-         "Extend your arms straight out to the sides and make controlled circles clockwise."),
-        ("Arm Circles (Counter Clockwise)", "mobility", "shoulders", "bodyweight", anywhere, "beginner", 
-         "Extend your arms straight out to the sides and make controlled circles counter-clockwise."),
-        ("Eccentric Only Pull Up", "mobility", "back", "bodyweight", ["gym", "outdoor"], "intermediate", 
-         "Jump to the top of a pull-up position, then lower yourself down as slowly as possible."),
-        ("Seated Zottman Curl", "mobility", "biceps", "dumbbells", ["gym", "home"], "beginner", 
-         "Curl dumbbells up with palms facing up, rotate wrists at the top, and lower with palms facing down."),
-        ("90/90 Hip Crossover", "mobility", "glutes", "bodyweight", anywhere, "beginner", 
-         "Sit with both legs bent at 90 degrees and rotate your hips/knees from side to side on the floor."),
-        ("Warm-up Sit Up", "mobility", "core", "bodyweight", anywhere, "beginner", 
-         "Lie on your back, knees bent, and sit all the way up to warm up the abdominals."),
-        ("Jump Squat", "mobility", "quads", "bodyweight", anywhere, "beginner", 
-         "Perform a bodyweight squat and explode upward into a jump to activate the nervous system."),
-
-        # --- static cooldown stretches (category 'flexibility') ---
-        ("Cross-Body Shoulder Stretch", "flexibility", "shoulders", "bodyweight", anywhere, "beginner",
-         "1. Bring one arm across your chest.\n2. Hold it with the other arm.\n3. Hold the stretch, then switch."),
-        ("Child's Pose", "flexibility", "back", "bodyweight", anywhere, "beginner",
-         "1. Kneel and sit back on your heels.\n2. Reach your arms forward along the floor.\n3. Relax and breathe deeply."),
-        ("Overhead Side Reach Lat Stretch", "flexibility", "back", "bodyweight", anywhere, "beginner",
-         "1. Raise one arm overhead.\n2. Lean gently to the opposite side.\n3. Hold, then switch."),
-        ("Standing Quad Stretch", "flexibility", "quads", "bodyweight", anywhere, "beginner",
-         "1. Stand on one leg (hold a wall).\n2. Pull the other heel toward your glute.\n3. Keep knees together and hold, then switch."),
-        ("Seated Hamstring Stretch", "flexibility", "hamstrings", "bodyweight", anywhere, "beginner",
-         "1. Sit with one leg straight, the other bent.\n2. Hinge forward from your hips.\n3. Hold, then switch."),
-        ("Figure-Four Glute Stretch", "flexibility", "glutes", "bodyweight", anywhere, "beginner",
-         "1. Lie on your back, cross one ankle over the opposite knee.\n2. Pull the thigh toward your chest.\n3. Hold, then switch."),
-        ("Cobra Stretch", "flexibility", "core", "bodyweight", anywhere, "beginner",
-         "1. Lie face down, hands under shoulders.\n2. Gently press up, keeping hips on the floor.\n3. Hold and breathe."),
-        ("Doorway Biceps Stretch", "flexibility", "biceps", "bodyweight", anywhere, "beginner",
-         "1. Place your palm on a wall, arm straight, thumb down.\n2. Slowly turn your body away.\n3. Hold, then switch."),
-        ("Overhead Triceps Stretch", "flexibility", "triceps", "bodyweight", anywhere, "beginner",
-         "1. Raise one arm and bend the elbow behind your head.\n2. Gently press the elbow with your other hand.\n3. Hold, then switch."),
-        ("Wall Calf Stretch", "flexibility", "calves", "bodyweight", anywhere, "beginner",
-         "1. Stand facing a wall, one foot back with the heel down.\n2. Lean forward until you feel the calf stretch.\n3. Hold, then switch."),
-        ("Standing Forward Fold", "flexibility", "full body", "bodyweight", anywhere, "beginner",
-         "1. Stand with feet hip-width apart.\n2. Fold forward from the hips, knees slightly bent.\n3. Let your head and arms hang and breathe."),
-    ]
-
-    existing = {r["exercise_name"].lower() for r in records}
-    for name, category, muscle, equipment, locations, level, instructions in supplemental:
-        if name.lower() not in existing:
-            records.append({
-                "exercise_name": name, "exercise_category": category, "target_muscle": muscle.title(),
-                "major_muscle_group": major_muscle_group(muscle),
-                "equipment_needed": equipment, "location_suitability": locations,
-                "difficulty_level": level,
-                "instructions": instructions or f"1. Setup your {equipment} securely.\n2. Brace your core.\n3. Contract your {muscle} to initiate the movement.\n4. Complete the reps with a controlled tempo."
-            })
-
-    kb = pd.DataFrame(records).drop_duplicates("exercise_name").reset_index(drop=True)
-    # NEW columns, computed once for every exercise (CSV rows and supplemental rows alike).
-    kb["is_compound"] = [infer_compound(n, c) for n, c in zip(kb["exercise_name"], kb["exercise_category"])]
-    kb["movement_type"] = [infer_movement_type(n, c) for n, c in zip(kb["exercise_name"], kb["exercise_category"])]
-    kb["joint_action"] = [infer_joint_action(n, c) for n, c in zip(kb["exercise_name"], kb["exercise_category"])]
-    return kb
+    kb["location_suitability"] = kb["location_suitability"].apply(json.loads)
+    kb["is_compound"] = kb["is_compound"].astype(str).str.lower().eq("true")
+    for col in ["exercise_category", "major_muscle_group", "equipment_needed", "difficulty_level",
+                "movement_type", "joint_action"]:
+        kb[col] = kb[col].astype(str).str.strip().str.lower()
+    kb["instructions"] = kb["instructions"].astype(str)
+    for col in ["image_1", "image_2"]:
+        if col not in kb.columns:
+            kb[col] = ""
+    return kb.drop_duplicates("exercise_name").reset_index(drop=True)
 
 
 exercise_kb = load_and_build_kb()
@@ -1596,8 +1403,19 @@ def page_exercise_detail():
     col2.metric("Prescription", f"{ex['Sets']} Sets × {ex['Reps']}")
     col2.metric("Rest", ex.get("Rest", "Not specified"))
 
+    # two photos (start / end position) from the knowledge base, if this exercise has them
+    match = exercise_kb[exercise_kb["exercise_name"] == ex["Exercise"]]
+    if not match.empty and (match.iloc[0]["image_1"] or match.iloc[0]["image_2"]):
+        img1, img2 = st.columns(2)
+        if match.iloc[0]["image_1"]:
+            img1.image(match.iloc[0]["image_1"], caption="Start position", use_container_width=True)
+        if match.iloc[0]["image_2"]:
+            img2.image(match.iloc[0]["image_2"], caption="End position", use_container_width=True)
+
     st.subheader("How to perform this exercise:")
     st.info(ex["Instructions"])
+    if not match.empty and match.iloc[0].get("source") == "Free Exercise DB":
+        st.caption("Instructions and images: Free Exercise DB (public domain).")
 
     st.subheader("Why we recommended this:")
     reasons = f"""
