@@ -300,6 +300,17 @@ def load_and_build_kb():
 
 
 exercise_kb = load_and_build_kb()
+
+
+EQUIPMENT_ORDER = ["dumbbells", "barbell", "e-z curl bar", "kettlebells", "bench", "resistance band",
+                   "machine", "cable", "exercise ball", "foam roll", "lacrosse ball", "jump rope"]
+
+
+def equipment_choices(kb):
+    """Equipment labels for the profile form, built from exercise_kb_final.csv (bodyweight is always allowed)."""
+    values = {str(v).strip().lower() for v in kb["equipment_needed"]} - {"bodyweight", ""}
+    ordered = [v for v in EQUIPMENT_ORDER if v in values] + sorted(values - set(EQUIPMENT_ORDER))
+    return [v.title() for v in ordered]      # the safety filter lowercases labels, so they match the KB values
 # =============================================================================
 # 2. RECOMMENDATION ENGINE PIPELINE
 # =============================================================================
@@ -1258,10 +1269,13 @@ def page_profile():
     locations = ["Gym", "Home", "Outdoor"]
     location = st.radio("Workout Location", locations, index=locations.index(p['location']))
 
+    # options come straight from the knowledge base, so every choice matches real exercises
+    equipment_options = equipment_choices(exercise_kb)
     equipment = st.multiselect(
         "Available Equipment",
-        ["Dumbbells", "Barbell", "Bench", "Resistance Band", "Machine", "Cable", "Stationary Bike", "Jump Rope"],
-        default=p['equipment']
+        equipment_options,
+        default=[e for e in p['equipment'] if e in equipment_options],   # drop old choices that no longer exist
+        help="Bodyweight exercises are always included. Only equipment used by at least one exercise is listed."
     )
 
     # --- days per week: recommendation pops up once level + goal are chosen ---
