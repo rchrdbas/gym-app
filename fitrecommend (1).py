@@ -58,6 +58,7 @@ BEGINNER_MAX_EXTRA_SETS = 1         # beginners never get more than +1 set from 
 
 LEVEL_RANK = {"beginner": 1, "intermediate": 2, "advanced": 3}
 LEVEL_NAMES = {1: "beginner", 2: "intermediate", 3: "advanced"}
+SAME_LEVEL_BONUS = 0.15            # ranking bonus for exercises at the user's own level
 SECTION_ORDER = ["Warm-up", "Main", "Finisher", "Cooldown"]
 
 # --- Configuration & Initialization ---
@@ -443,6 +444,10 @@ def rank_exercises(safe_pool, profile, feedback):
 
     ranked = safe_pool.copy()
     ranked["recommendation_score"] = scores
+
+    # NEW: exercises at the user's own level are preferred; easier ones stay allowed as a fallback.
+    own_level = LEVEL_NAMES[effective_level_rank(profile)]
+    ranked.loc[ranked["difficulty_level"].astype(str).str.lower() == own_level, "recommendation_score"] += SAME_LEVEL_BONUS
 
     liked = {x.strip().lower() for x in profile.get("liked_exercises", [])}
     for idx, row in ranked.iterrows():
