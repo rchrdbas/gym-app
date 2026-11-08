@@ -1387,6 +1387,44 @@ def page_plan():
         st.divider()
 
 
+PHOTO_FRAME_CSS = """
+<style>
+.ex-photos {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    padding: 14px; margin: 6px 0 4px 0;
+    background: linear-gradient(180deg, rgba(0,255,170,0.07), rgba(0,255,170,0.02));
+    border: 1px solid rgba(0,255,170,0.35); border-radius: 18px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.ex-photos figure { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.ex-photos .ex-photo {
+    background: #0b0e0c; border-radius: 12px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.15); aspect-ratio: 3 / 2;
+    display: flex; align-items: center; justify-content: center;
+}
+.ex-photos img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ex-photos figcaption {
+    text-align: center; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.04em;
+    color: #00FFAA; text-transform: uppercase;
+}
+.ex-photos figcaption span { color: #9aa5a0; font-weight: 500; margin-right: 6px; }
+@media (max-width: 480px) { .ex-photos { gap: 8px; padding: 8px; } .ex-photos figcaption { font-size: 0.72rem; } }
+</style>
+"""
+
+
+def show_exercise_photos(image_1, image_2):
+    """Two photos side by side (start and end position) inside a rounded frame."""
+    from html import escape
+    st.markdown(PHOTO_FRAME_CSS + f"""
+<div class="ex-photos">
+  <figure><div class="ex-photo"><img src="{escape(image_1)}" alt="Start position" loading="lazy"></div>
+          <figcaption><span>1</span>Start position</figcaption></figure>
+  <figure><div class="ex-photo"><img src="{escape(image_2)}" alt="End position" loading="lazy"></div>
+          <figcaption><span>2</span>End position</figcaption></figure>
+</div>""", unsafe_allow_html=True)
+
+
 def page_exercise_detail():
     ex = st.session_state.selected_exercise
     if st.button("⬅ Back to Plan"):
@@ -1403,19 +1441,23 @@ def page_exercise_detail():
     col2.metric("Prescription", f"{ex['Sets']} Sets × {ex['Reps']}")
     col2.metric("Rest", ex.get("Rest", "Not specified"))
 
-    # two photos (start / end position) from the knowledge base, if this exercise has them
-    match = exercise_kb[exercise_kb["exercise_name"] == ex["Exercise"]]
-    if not match.empty and (match.iloc[0]["image_1"] or match.iloc[0]["image_2"]):
-        img1, img2 = st.columns(2)
-        if match.iloc[0]["image_1"]:
-            img1.image(match.iloc[0]["image_1"], caption="Start position", use_container_width=True)
-        if match.iloc[0]["image_2"]:
-            img2.image(match.iloc[0]["image_2"], caption="End position", use_container_width=True)
+    # two photos (start / end position) from the knowledge base, shown in a frame
+    key = str(ex["Exercise"]).strip().lower()
+    match = exercise_kb[exercise_kb["exercise_name"].astype(str).str.strip().str.lower() == key]
+    kb_row = match.iloc[0] if not match.empty else None
+    if kb_row is not None and kb_row["image_1"] and kb_row["image_2"]:
+        show_exercise_photos(kb_row["image_1"], kb_row["image_2"])
+        source_name = str(kb_row.get("photo_source", "") or "")
+        credit = "Photos: Free Exercise DB (public domain)"
+        if source_name and source_name.lower() != key:
+            credit += f", entry “{source_name}”"
+        st.caption(credit + ".")
+    else:
+        st.info("Photos are not available for this exercise. If you created your plan before the "
+                "latest update, go back and generate a new plan.")
 
     st.subheader("How to perform this exercise:")
     st.info(ex["Instructions"])
-    if not match.empty and match.iloc[0].get("source") == "Free Exercise DB":
-        st.caption("Instructions and images: Free Exercise DB (public domain).")
 
     st.subheader("Why we recommended this:")
     reasons = f"""
