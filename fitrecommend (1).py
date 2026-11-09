@@ -303,7 +303,7 @@ def load_and_build_kb():
 exercise_kb = load_and_build_kb()
 
 
-EQUIPMENT_ORDER = ["dumbbells", "barbell", "e-z curl bar", "kettlebells", "bench", "resistance band",
+EQUIPMENT_ORDER = ["dumbbells", "barbell", "e-z curl bar", "kettlebells", "bench", "pull-up bar", "dip bars", "resistance band",
                    "machine", "cable", "exercise ball", "foam roll", "lacrosse ball", "jump rope"]
 
 
@@ -1359,8 +1359,9 @@ def page_plan():
     st.caption(f"**Week {st.session_state.week_number}** | **Goal:** {p.get('goal')} | **Level:** {p.get('level')} | **{p.get('days')} Days / Week**")
     # NEW: show the overload adjustments currently applied
     st.caption(
-        f"Overload: +{prog['extra_sets']} sets, rest {prog['rest_delta']:+d}s, "
-        f"+{prog['reps_bump']} reps, harder variants: {'on' if prog['difficulty_bump'] else 'off'}")
+        f"Made harder so far: +{prog['extra_sets']} sets, "
+        f"{abs(prog['rest_delta'])}s less rest, +{prog['reps_bump']} reps, "
+        f"harder exercises: {'unlocked' if prog['difficulty_bump'] else 'not yet'}")
     show_flash()
 
     if st.button("⌂ Back to Home"):
@@ -1581,14 +1582,30 @@ def page_progress():
         col3.metric("Current Week", st.session_state.week_number)
 
     prog = st.session_state.progression
-    st.subheader("Current Overload Settings")
+    st.subheader("How your plan has been made harder")
+    st.caption("Your plan gets a little harder when you tell us your workouts feel too easy. "
+               "Here is what has changed so far:")
+    extra = prog['extra_sets']
+    rest = prog['rest_delta']
+    reps = prog['reps_bump']
+    streak = prog['perfect_streak']
     st.markdown(f"""
-    * **Extra sets:** +{prog['extra_sets']}
-    * **Rest change:** {prog['rest_delta']:+d} seconds
-    * **Rep target bump:** +{prog['reps_bump']}
-    * **Harder variants unlocked:** {'Yes' if prog['difficulty_bump'] else 'No'}
-    * **Consecutive 'Perfect' weeks:** {prog['perfect_streak']} / {STREAK_FOR_REP_BUMP}
+    * **Extra sets:** {f"+{extra} set per exercise" if extra == 1 else (f"+{extra} sets per exercise" if extra else "none yet")}
+    * **Rest between sets:** {f"{abs(rest)} seconds shorter than normal" if rest < 0 else "normal"}
+    * **Extra reps:** {f"+{reps} rep on each set" if reps == 1 else (f"+{reps} reps on each set" if reps else "none yet")}
+    * **Harder exercises:** {"unlocked - you may now see exercises one level up" if prog['difficulty_bump'] else "not yet - you only get exercises at your level"}
+    * **Weeks that felt just right:** {streak} of {STREAK_FOR_REP_BUMP} needed in a row
     """)
+    with st.expander("What do these mean?"):
+        st.markdown(f"""
+        * **Weeks that felt just right:** after each workout you rate how hard it was. If you rate
+          **Perfect** for {STREAK_FOR_REP_BUMP} week in a row, your plan adds 1 rep to every set.
+          Rating **Too Easy** adds a set or shortens rest. Rating **Too Hard** steps one change back.
+        * **Harder exercises:** a tougher version of the exercises, one level above the level you picked.
+          They appear only after your plan has been made harder several times.
+        * **Extra sets / extra reps / shorter rest:** small steps that make each workout a bit more demanding,
+          so your body keeps improving. Beginners get at most +1 extra set.
+        """)
 
     st.subheader("Progression History")
     if prog["history"]:
