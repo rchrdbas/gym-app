@@ -24,7 +24,7 @@ from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # =============================================================================
-# TUNABLE CONSTANTS (NEW) - change these numbers to tweak the algorithm
+# TUNABLE CONSTANTS - change these numbers to tweak the algorithm
 # =============================================================================
 SECONDS_PER_REP = 4                 # estimated time to perform one repetition
 SETUP_SECONDS_PER_EXERCISE = 30     # walking to the rack, loading weights, etc. (0 = pure formula)
@@ -44,11 +44,10 @@ MAX_DIFFICULTY_BUMP = 1             # allow at most ONE tier above the self-rate
 STREAK_FOR_REP_BUMP = 1             # "Perfect" weeks in a row needed to bump reps
 OVERLOAD_LEVERS = ["sets", "rest", "difficulty"]   # rotated when a week is "Too Easy"
 
-# Feedback tag names (NEW)
+# Feedback tag names
 TAG_TOO_HEAVY = "Too Heavy"
 TAG_EXHAUSTING = "Cardiovascularly Exhausting"
 TAG_JOINT_PAIN = "Joint Pain"
-FEEDBACK_TAGS = [TAG_TOO_HEAVY, TAG_EXHAUSTING, TAG_JOINT_PAIN]
 
 # Age and beginner safety rules (design decisions, not taken from a guideline)
 MIN_AGE = 18                        # the app is for adults
@@ -120,20 +119,20 @@ def new_progression():
 # "if ... not in" means: only set it the FIRST time the app opens.
 _defaults = {
     "page": "home",
-    "feedback": {},                 # NEW format: {exercise_name: {tag: count}}
+    "feedback": {},                 # format: {exercise_name: {tag: count}}
     "weekly_plan": pd.DataFrame(),
     "selected_exercise": None,
     "completed_workouts": 0,
-    "progression": new_progression(),   # NEW: overload state
-    "week_number": 1,                   # NEW
-    "week_feedback": {},                # NEW: {day: "Too Easy"/"Perfect"/"Too Hard"} for this week
-    "session_log": [],                  # NEW: one entry per rated session
-    "blacklisted_exercises": set(),     # NEW: names removed forever after "Joint Pain"
-    "blacklisted_patterns": set(),      # NEW: (joint_action, muscle_group) pairs removed forever
-    "feedback_day": None,               # NEW: which day the feedback form is about
-    "user_id": None,                    # NEW: logged-in user (None = guest)
+    "progression": new_progression(),   # overload state
+    "week_number": 1,
+    "week_feedback": {},                # {day: "Too Easy"/"Perfect"/"Too Hard"} for this week
+    "session_log": [],                  # one entry per rated session
+    "blacklisted_exercises": set(),     # names removed forever after "Joint Pain"
+    "blacklisted_patterns": set(),      # (joint_action, muscle_group) pairs removed forever
+    "feedback_day": None,               # which day the feedback form is about
+    "user_id": None,                    # logged-in user (None = guest)
     "nickname": None,
-    "flash": None,                      # NEW: one-time message shown after a rerun
+    "flash": None,                      # one-time message shown after a rerun
 }
 
 #safety for app memory. When user press any button, code run again from top to bottom,
@@ -164,113 +163,9 @@ def show_flash():
         st.session_state.flash = None
 
 
-def major_muscle_group(value):
-    """Convert a messy muscle name into a simple group ('Lats' -> 'back')."""
-    text = str(value).lower()
-    if any(term in text for term in ["chest", "pectoral"]):
-        return "chest"
-    if any(term in text for term in ["lat", "back", "rhomboid", "trap"]):
-        return "back"
-    if any(term in text for term in ["shoulder", "deltoid"]):
-        return "shoulders"
-    if any(term in text for term in ["quad", "leg"]):
-        return "quads"
-    if "hamstring" in text:
-        return "hamstrings"
-    if "glute" in text:
-        return "glutes"
-    if any(term in text for term in ["abdominal", "core", "oblique"]):
-        return "core"
-    if "bicep" in text:
-        return "biceps"
-    if "tricep" in text:
-        return "triceps"
-    if "calf" in text:
-        return "calves"
-    return "other"
-
-
 # =============================================================================
 # 1. DATA & KNOWLEDGE BASE BUILDER
 # =============================================================================
-
-# --- NEW: helpers that label each exercise by reading its title -------------
-def _contains_any(text, keywords):
-    """True if any keyword appears at the START of a word in `text`.
-    (The \\b means 'word boundary', so 'row' matches 'rows' but not 'arrow'.)"""
-    return any(re.search(r"\b" + re.escape(k), text) for k in keywords)
-
-
-# Multi-joint lifts that should ALWAYS count as compound.
-_STRONG_COMPOUND = ["squat", "deadlift", "lunge", "bench press", "push-up", "pushup", "push up",
-                    "pull-up", "pullup", "pull up", "chin-up", "chin up", "dip"]
-# Single-joint movements.
-_ISOLATION = ["curl", "extension", "raise", "fly", "flye", "kickback", "crunch", "sit-up", "situp",
-              "shrug", "pushdown", "push-down", "skull", "pullover", "plank", "wrist", "adduct",
-              "abduct", "tricep", "bicep", "calf"]
-# Words that suggest compound if nothing above already decided.
-_WEAK_COMPOUND = ["press", "row", "pulldown", "pull-down", "thrust", "bridge", "clean", "snatch",
-                  "step-up", "step up", "good morning", "swing", "burpee"]
-_UNILATERAL = ["lunge", "single", "one-arm", "one arm", "one-leg", "one leg", "unilateral",
-               "concentration", "split squat", "step-up", "step up", "bulgarian", "alternating",
-               "pistol", "kickback"]
-# (keyword, joint action) - FIRST match wins, so specific words come first.
-_JOINT_ACTIONS = [
-    ("leg curl", "knee_flexion"), ("hamstring curl", "knee_flexion"),
-    ("leg extension", "knee_extension"), ("calf", "ankle_plantarflexion"),
-    ("deadlift", "hip_hinge"), ("good morning", "hip_hinge"), ("hip thrust", "hip_hinge"),
-    ("thrust", "hip_hinge"), ("bridge", "hip_hinge"), ("back extension", "hip_hinge"), ("swing", "hip_hinge"),
-    ("squat", "squat_pattern"), ("lunge", "squat_pattern"), ("leg press", "squat_pattern"),
-    ("step-up", "squat_pattern"), ("step up", "squat_pattern"),
-    ("pulldown", "vertical_pull"), ("pull-down", "vertical_pull"), ("pull-up", "vertical_pull"),
-    ("pullup", "vertical_pull"), ("pull up", "vertical_pull"), ("chin-up", "vertical_pull"), ("chin up", "vertical_pull"),
-    ("row", "horizontal_pull"), ("face pull", "horizontal_pull"),
-    ("overhead press", "vertical_push"), ("shoulder press", "vertical_push"),
-    ("military press", "vertical_push"), ("arnold", "vertical_push"),
-    ("lateral raise", "shoulder_raise"), ("front raise", "shoulder_raise"),
-    ("leg raise", "trunk_flexion"),
-    ("bench press", "horizontal_push"), ("chest press", "horizontal_push"), ("push-up", "horizontal_push"),
-    ("pushup", "horizontal_push"), ("push up", "horizontal_push"), ("dip", "horizontal_push"),
-    ("fly", "chest_fly"), ("flye", "chest_fly"), ("press", "horizontal_push"),
-    ("pushdown", "elbow_extension"), ("push-down", "elbow_extension"), ("skull", "elbow_extension"),
-    ("tricep", "elbow_extension"), ("curl", "elbow_flexion"),
-    ("crunch", "trunk_flexion"), ("sit-up", "trunk_flexion"), ("situp", "trunk_flexion"),
-    ("plank", "trunk_stability"), ("twist", "trunk_rotation"),
-]
-
-
-def infer_compound(name, category):
-    """NEW: True for multi-joint lifts (squat, bench press), False for single-joint
-    ones (curl, calf raise). Only strength exercises can be 'compound'."""
-    if category != "resistance":
-        return False
-    text = str(name).lower()
-    if _contains_any(text, _STRONG_COMPOUND):
-        return True
-    if _contains_any(text, _ISOLATION):
-        return False
-    return _contains_any(text, _WEAK_COMPOUND)
-
-
-def infer_movement_type(name, category):
-    """NEW: 'unilateral' = one limb at a time (lunge), otherwise 'bilateral'."""
-    if category == "resistance" and _contains_any(str(name).lower(), _UNILATERAL):
-        return "unilateral"
-    return "bilateral"
-
-
-def infer_joint_action(name, category):
-    """which joint movement an exercise trains (e.g. 'horizontal_push').
-    Used to find 'similar' exercises when the user reports Joint Pain.
-    Warm-ups, stretches and cardio return 'other' so they are never caught."""
-    if category != "resistance":
-        return "other"
-    text = str(name).lower()
-    for keyword, action in _JOINT_ACTIONS:
-        if re.search(r"\b" + re.escape(keyword), text):
-            return action
-    return "other"
-
 
 KB_FILE = "exercise_kb_final.csv"   # produced by the preprocessing notebook (dp_final.ipynb)
 
@@ -317,7 +212,7 @@ def equipment_choices(kb):
 # =============================================================================
 
 def blacklist_mask(frame, names, patterns):
-    """NEW: True for every row that is blacklisted, either because its NAME is
+    """True for every row that is blacklisted, either because its NAME is
     banned or because it matches a banned (joint_action, muscle_group) PATTERN."""
     if frame.empty:
         return pd.Series(False, index=frame.index, dtype=bool)
@@ -330,7 +225,7 @@ def blacklist_mask(frame, names, patterns):
 
 
 def effective_level_rank(profile):
-    """NEW: self-rated level (1-3) PLUS any 'harder variant' unlocked by progression."""
+    """self-rated level (1-3) PLUS any 'harder variant' unlocked by progression."""
     base = LEVEL_RANK.get(str(profile["self_rated_fitness_level"]).lower(), 1)
     bump = (profile.get("progression") or {}).get("difficulty_bump", 0)
     return min(3, base + bump)
@@ -341,8 +236,7 @@ def safety_filter(exercises, profile, feedback):
     user_level = effective_level_rank(profile)
     allowed_equipment = {str(x).strip().lower() for x in profile["available_equipment"]}
     location = profile["workout_location"].strip().lower()
-    disliked = {x.strip().lower() for x in profile.get("disliked_exercises", [])}
-    # NEW: permanent Joint-Pain blacklist
+    # permanent Joint-Pain blacklist
     banned_names = {str(x).lower() for x in profile.get("blacklisted_exercises", [])}
     banned_patterns = set(profile.get("blacklisted_patterns", []))
 
@@ -350,8 +244,7 @@ def safety_filter(exercises, profile, feedback):
     rows = rows[rows["difficulty_level"].map(LEVEL_RANK).fillna(3) <= user_level]
     rows = rows[rows["equipment_needed"].astype(str).str.lower().isin(allowed_equipment) | (rows["equipment_needed"] == "bodyweight")]
     rows = rows[rows["location_suitability"].apply(lambda places: location in [str(p).lower() for p in places])]
-    rows = rows[~rows["exercise_name"].astype(str).str.lower().isin(disliked)]
-    # NEW: conservative rule for users aged 50+ -> no jump or plyometric exercises
+    # conservative rule for users aged 50+ -> no jump or plyometric exercises
     if int(profile.get("age") or 0) >= SENIOR_AGE:
         rows = rows[rows["exercise_category"] != "plyometrics"]
         rows = rows[~rows["exercise_name"].astype(str).str.lower().str.contains("jump|plyometric", regex=True)]
@@ -417,7 +310,7 @@ def user_features(profile):
         "goal": goal_category(profile["fitness_goal"]),
         "exercise_category": goal_category(profile["fitness_goal"]),
         "target_muscle": "any", "equipment": "any",
-        # NEW: after progression unlocks a harder tier, we aim at that tier.
+        # after progression unlocks a harder tier, we aim at that tier.
         "difficulty": LEVEL_NAMES[effective_level_rank(profile)],
         "location": profile["workout_location"].lower(),
         "location_match": True
@@ -425,7 +318,7 @@ def user_features(profile):
 
 
 def feedback_penalty(tags):
-    """NEW: score reduction for one exercise from its negative feedback tags.
+    """score reduction for one exercise from its negative feedback tags.
     `tags` looks like {"Too Heavy": 2}. Each report counts, capped at 3 reports."""
     heavy = min(tags.get(TAG_TOO_HEAVY, 0), 3)
     exhausted = min(tags.get(TAG_EXHAUSTING, 0), 3)
@@ -445,25 +338,22 @@ def rank_exercises(safe_pool, profile, feedback):
     ranked = safe_pool.copy()
     ranked["recommendation_score"] = scores
 
-    # NEW: exercises at the user's own level are preferred; easier ones stay allowed as a fallback.
+    # exercises at the user's own level are preferred; easier ones stay allowed as a fallback.
     own_level = LEVEL_NAMES[effective_level_rank(profile)]
     ranked.loc[ranked["difficulty_level"].astype(str).str.lower() == own_level, "recommendation_score"] += SAME_LEVEL_BONUS
 
-    liked = {x.strip().lower() for x in profile.get("liked_exercises", [])}
     for idx, row in ranked.iterrows():
-        if row["exercise_name"].lower() in liked or row["target_muscle"].lower() in liked:
-            ranked.loc[idx, "recommendation_score"] += 0.5
-        # NEW: "Too Heavy" / "Cardiovascularly Exhausting" lower the score.
+        # "Too Heavy" / "Cardiovascularly Exhausting" lower the score.
         ranked.loc[idx, "recommendation_score"] -= feedback_penalty(feedback.get(row["exercise_name"], {}))
 
     return ranked.sort_values("recommendation_score", ascending=False).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# NEW: prescription (sets / reps / rest) and the time-cost formula
+# prescription (sets / reps / rest) and the time-cost formula
 # ---------------------------------------------------------------------------
 def estimate_exercise_seconds(sets, reps, rest_seconds, sides=1):
-    """NEW (feature 1): (Sets x Reps x 4 s) + ((Sets - 1) x Rest).
+    """(feature 1) (Sets x Reps x 4 s) + ((Sets - 1) x Rest).
     `sides` is 2 for one-limb exercises, because you do every rep on BOTH sides."""
     work = sets * reps * SECONDS_PER_REP * sides
     rest = max(sets - 1, 0) * rest_seconds
@@ -566,7 +456,7 @@ def base_prescription(user_goal, level_rank=2):
 
 
 def prescribe_exercise(row, user_goal, session_minutes, progression, feedback, section, level_rank=2, age=0):
-    """NEW: work out sets, reps, rest AND the estimated duration of one exercise.
+    """work out sets, reps, rest AND the estimated duration of one exercise.
     This applies the overload state (extra sets, shorter rest, more reps) and the
     'Cardiovascularly Exhausting' tag (more rest / shorter cardio)."""
     category = str(row["exercise_category"]).lower()
@@ -604,7 +494,7 @@ def prescribe_exercise(row, user_goal, session_minutes, progression, feedback, s
         rest = int(np.clip(rest, *limits["rest"]))
     rest += 15 * exhausted
     if age >= SENIOR_AGE:
-        rest += SENIOR_EXTRA_REST     # NEW: a little more recovery for users aged 50+
+        rest += SENIOR_EXTRA_REST     # a little more recovery for users aged 50+
 
     reps_for_timing = round((low + high) / 2)    # use the middle of the rep range
     seconds = estimate_exercise_seconds(sets, reps_for_timing, rest, sides)
@@ -613,7 +503,7 @@ def prescribe_exercise(row, user_goal, session_minutes, progression, feedback, s
 
 
 def build_plan_row(row, rx, day, focus, section):
-    """NEW: turn one exercise + its prescription into one row of the plan table."""
+    """turn one exercise + its prescription into one row of the plan table."""
     category = str(row["exercise_category"]).lower()
     is_strength = category == "resistance"
     return {
@@ -630,7 +520,7 @@ def build_plan_row(row, rx, day, focus, section):
 
 
 def pick_support_exercises(pool, groups, target_seconds, section, exclude_names, rx_for):
-    """NEW (feature 7): choose warm-up or cooldown exercises worth ~target_seconds.
+    """(feature 7) choose warm-up or cooldown exercises worth ~target_seconds.
     Order of preference: one per trained muscle group -> more for those groups ->
     full-body movements -> anything left. A `while` loop adds items until the
     next one would push us past the target."""
@@ -668,8 +558,8 @@ def assemble_weekly_plan(ranked, profile, feedback):
     n_days = int(np.clip(profile["preferred_days_per_week"], 2, 6))
     session_minutes = int(np.clip(profile.get("session_duration_minutes", 60), 30, 90))
     day_indices = {
-        1: [0], 2: [0, 3], 3: [0, 2, 4], 4: [0, 1, 3, 5],
-        5: [0, 1, 3, 4, 6], 6: [0, 1, 2, 4, 5, 6], 7: list(range(7))
+        2: [0, 3], 3: [0, 2, 4], 4: [0, 1, 3, 5],
+        5: [0, 1, 3, 4, 6], 6: [0, 1, 2, 4, 5, 6]
     }[n_days]
 
     if ranked.empty:
@@ -681,7 +571,7 @@ def assemble_weekly_plan(ranked, profile, feedback):
     level_rank = LEVEL_RANK.get(str(profile.get("self_rated_fitness_level", "beginner")).lower(), 1)
     age = int(profile.get("age") or 0)
 
-    # NEW: total time we may spend, in seconds.
+    # total time we may spend, in seconds.
     total_budget = session_minutes * 60
     if COUNT_WARMUP_COOLDOWN_IN_DURATION:
         total_budget -= WARMUP_SECONDS + COOLDOWN_SECONDS
@@ -709,7 +599,7 @@ def assemble_weekly_plan(ranked, profile, feedback):
             lambda n: int(feedback_penalty(feedback.get(n, {})) > 0))
         candidates["muscle_usage"] = candidates["target_muscle"].astype(str).str.lower().map(
             lambda muscle: muscle_usage.get(muscle, 0))
-        # NEW (feature 2): is_compound sits right after "previously_used", so compound
+        # (feature 2) is_compound sits right after "previously_used", so compound
         # lifts are always preferred over isolation work.
         candidates = candidates.sort_values(
             ["previously_used", "is_compound_int", "penalised", "muscle_usage", "recommendation_score"],
@@ -789,11 +679,11 @@ def assemble_weekly_plan(ranked, profile, feedback):
             for _, row in fallback.iterrows():
                 try_add(row, False)
 
-        # NEW (feature 2): compound lifts first. sorted() is stable, so the order
+        # (feature 2) compound lifts first. sorted() is stable, so the order
         # within compound / isolation groups is kept.
         ordered_main = sorted(chosen, key=lambda item: 0 if bool(item["row"]["is_compound"]) else 1)
 
-        # --- NEW (feature 7): warm-up + cooldown targeting today's muscle groups ---
+        # --- (feature 7) warm-up + cooldown targeting today's muscle groups ---
         trained_groups = []
         for item in ordered_main:
             if str(item["row"]["exercise_category"]).lower() == "resistance":
@@ -851,9 +741,7 @@ def generate_plan():
         "preferred_days_per_week": p.get("days"),
         "session_duration_minutes": p.get("duration"),
         "self_rated_fitness_level": p.get("level"),
-        "liked_exercises": set(),
-        "disliked_exercises": set(),
-        # NEW: progression state and the permanent Joint-Pain blacklist
+        # progression state and the permanent Joint-Pain blacklist
         "progression": st.session_state.progression,
         "blacklisted_exercises": st.session_state.blacklisted_exercises,
         "blacklisted_patterns": st.session_state.blacklisted_patterns,
@@ -867,13 +755,12 @@ def generate_plan():
 
 
 # =============================================================================
-# NEW (feature 4): JOINT-PAIN BLACKLIST
+# (feature 4) JOINT-PAIN BLACKLIST
 # =============================================================================
 def blacklist_exercise(name):
     """Permanently ban an exercise AND similar ones (same joint action + same muscle
     group). Returns how many OTHER exercises were banned along with it.
-    Note: 'permanent' means for this session; refreshing the browser resets it
-    unless you later save st.session_state to a file or database."""
+    For signed-in users the ban is saved with the rest of their data (see autosave)."""
     st.session_state.blacklisted_exercises.add(name.lower())
     match = exercise_kb[exercise_kb["exercise_name"].str.lower() == name.lower()]
     if match.empty:
@@ -903,7 +790,7 @@ def purge_blacklisted(plan_df, rated_days):
 
 
 # =============================================================================
-# NEW (feature 3): PROGRESSIVE OVERLOAD ENGINE
+# (feature 3) PROGRESSIVE OVERLOAD ENGINE
 # =============================================================================
 def apply_too_easy(prog, max_extra_sets=MAX_EXTRA_SETS):
     """A 'Too Easy' week pulls ONE lever (sets -> rest -> harder variants, rotating)
@@ -990,10 +877,6 @@ def record_tag(name, tag):
     counts = st.session_state.feedback.setdefault(name, {})
     counts[tag] = counts.get(tag, 0) + 1
 
-
-# =============================================================================
-# 3. UI PAGES
-# =============================================================================
 
 # =============================================================================
 # PERSISTENT STORAGE (nickname + PIN login, Supabase)
@@ -1221,6 +1104,9 @@ def account_box():
                         st.rerun()
 
 
+# =============================================================================
+# 3. UI PAGES
+# =============================================================================
 def page_home():
     st.markdown("<h1 style='text-align: center;'>FitRecommend</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>Personalized Workout Recommendation System</h3>", unsafe_allow_html=True)
@@ -1242,7 +1128,6 @@ def page_home():
         if st.button("My Progress", use_container_width=True):
             navigate_to('progress')
             st.rerun()
-        # --- NEW TRAINING GUIDE BUTTON ---
         if st.button("Training Guide", use_container_width=True):
             navigate_to('learn')
             st.rerun()
@@ -1357,7 +1242,7 @@ def page_plan():
     p = st.session_state.profile
     prog = st.session_state.progression
     st.caption(f"**Week {st.session_state.week_number}** | **Goal:** {p.get('goal')} | **Level:** {p.get('level')} | **{p.get('days')} Days / Week**")
-    # NEW: show the overload adjustments currently applied
+    # show the overload adjustments currently applied
     st.caption(
         f"Made harder so far: +{prog['extra_sets']} sets, "
         f"{abs(prog['rest_delta'])}s less rest, +{prog['reps_bump']} reps, "
@@ -1508,11 +1393,11 @@ def page_feedback():
     st.write(f"Feedback for **{day}**. It improves future recommendations.")
 
     rating = st.slider("Overall Rating (1 = Poor, 5 = Excellent)", 1, 5, 4)
-    # NEW: three options map directly onto the overload engine.
+    # three options map directly onto the overload engine.
     difficulty = st.select_slider("How difficult was today's workout?",
                                   options=["Too Easy", "Perfect", "Too Hard"], value="Perfect")
 
-    # NEW (feature 4): granular, per-exercise tags.
+    # (feature 4) granular, per-exercise tags.
     exercises_today = list(dict.fromkeys(plan_df[plan_df["Day"] == day]["Exercise"]))
     st.markdown("**Anything specific? (optional)**")
     too_heavy = st.multiselect(f"{TAG_TOO_HEAVY} (we'll rank these lower)", exercises_today)
@@ -1570,7 +1455,7 @@ def page_progress():
     st.title("My Progress")
     show_flash()
 
-    # NEW: a real average instead of a hard-coded number.
+    # a real average instead of a hard-coded number.
     scale = {"Too Easy": 1, "Perfect": 3, "Too Hard": 5}
     log = st.session_state.session_log
     average = f"{np.mean([scale[e['difficulty']] for e in log]):.1f} / 5" if log else "—"
@@ -1618,7 +1503,6 @@ def page_progress():
         st.subheader("Excluded for Joint Pain")
         st.write(", ".join(sorted(x.title() for x in st.session_state.blacklisted_exercises)))
 
-# --- NEW TRAINING GUIDE INTEGRATION ---
 def page_learn():
     if st.button("⌂ Back to Home"):
         navigate_to('home')
@@ -1702,7 +1586,7 @@ pages = {
     'exercise_detail': page_exercise_detail,
     'feedback': page_feedback,
     'progress': page_progress,
-    'learn': page_learn # <--- INTEGRATED ROUTE HERE
+    'learn': page_learn
 }
 
 pages.get(st.session_state.page, page_home)()
