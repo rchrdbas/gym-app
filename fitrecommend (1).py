@@ -143,7 +143,7 @@ for _key, _value in _defaults.items():
 
 default_profile = {
     "age": 21, "level": "Beginner", "goal": "Muscle Gain", "location": "Gym",
-    "equipment": ["Dumbbells", "Barbell", "Bench"], "days": 4, "duration": 60,
+    "equipment": None, "days": 4, "duration": 60,     # None = not chosen yet (Gym -> everything ticked)
 }
 if 'profile' not in st.session_state:
     st.session_state.profile = default_profile
@@ -293,28 +293,47 @@ def training_days(profile, n_days):
     return days_out
 
 
+def preferred_type(goal):
+    """Compound lifts are preferred for every goal except Muscle Gain, where isolation
+    work is equally useful for growing individual muscles (no preference)."""
+    return None if str(goal).lower().replace(" ", "_") == "muscle_gain" else "compound"
+
+
+def rating_score(value):
+    """megaGym rating (8.0-10.0 after the notebook filter) scaled to 0.33-1.0; unrated = 0.5."""
+    try:
+        return round(min(max((float(value) - 7.0) / 3.0, 0.0), 1.0), 3)
+    except (TypeError, ValueError):
+        return 0.5
+
+
 def exercise_features(row, profile):
-    return {
-        "goal": goal_category(profile["fitness_goal"]),
-        "exercise_category": str(row["exercise_category"]).lower(),
-        "target_muscle": str(row["target_muscle"]).lower(),
-        "equipment": str(row["equipment_needed"]).lower(),
+    """What each exercise offers. Only features that DIFFER between exercises are used
+    (goal, location and category are already fixed by the safety filter and the pools)."""
+    owned = {str(x).strip().lower() for x in profile["available_equipment"]}
+    equipment = str(row["equipment_needed"]).lower()
+    features = {
         "difficulty": str(row["difficulty_level"]).lower(),
-        "location": profile["workout_location"].lower(),
-        "location_match": profile["workout_location"].lower() in [str(x).lower() for x in row["location_suitability"]]
+        "own_equipment": 1.0 if equipment != "bodyweight" and equipment in owned else 0.0,
+        "rating": rating_score(row.get("rating")),
     }
+    if str(row["exercise_category"]).lower() == "resistance":
+        features["type"] = "compound" if bool(row["is_compound"]) else "isolation"
+    return features
 
 
 def user_features(profile):
-    return {
-        "goal": goal_category(profile["fitness_goal"]),
-        "exercise_category": goal_category(profile["fitness_goal"]),
-        "target_muscle": "any", "equipment": "any",
+    """The user's 'ideal exercise': at their level, using the equipment they own, highly
+    rated, and of the type that suits their goal."""
+    ideal = {
         # after progression unlocks a harder tier, we aim at that tier.
         "difficulty": LEVEL_NAMES[effective_level_rank(profile)],
-        "location": profile["workout_location"].lower(),
-        "location_match": True
+        "own_equipment": 1.0,
+        "rating": 1.0,
     }
+    if preferred_type(profile["fitness_goal"]):
+        ideal["type"] = preferred_type(profile["fitness_goal"])
+    return ideal
 
 
 def feedback_penalty(tags):
@@ -516,6 +535,7 @@ def build_plan_row(row, rx, day, focus, section):
         "Equipment": row["equipment_needed"].title(),
         "Instructions": row["instructions"],
         "Seconds": rx["seconds"] + rx["setup"],      # total time cost incl. setup
+        "Score": round(float(row.get("recommendation_score", 0) or 0), 3),
     }
 
 
@@ -611,6 +631,14 @@ def assemble_weekly_plan(ranked, profile, feedback):
         finisher_row, finisher_rx = None, None
         if finisher is not None:
             finisher_pool = candidates[candidates["exercise_category"] == finisher]
+            if finisher == "cardio":
+                # plyometrics also count as a cardio-type finisher (users aged 50+ never get them:
+                # the safety filter removed them). Weight loss keeps real cardio first.
+                plyo = candidates[candidates["exercise_category"] == "plyometrics"]
+                if user_goal == "weight_loss":
+                    finisher_pool = pd.concat([finisher_pool, plyo])
+                else:
+                    finisher_pool = candidates[candidates["exercise_category"].isin(["cardio", "plyometrics"])]
             if not finisher_pool.empty:
                 finisher_row = finisher_pool.iloc[0]
                 finisher_rx = rx_for(finisher_row, "Finisher")
@@ -643,16 +671,18 @@ def assemble_weekly_plan(ranked, profile, feedback):
         def unilateral_count():
             return sum(1 for item in chosen if item["row"]["movement_type"] == "unilateral")
 
-        # Phase 0 (feature 6): guarantee the minimum number of one-limb exercises,
-        # preferring ones that train today's muscle groups.
-        unilateral_pool = resistance_pool[resistance_pool["movement_type"] == "unilateral"]
-        unilateral_today = unilateral_pool[unilateral_pool["major_muscle_group"].isin(session["groups"])]
+        # Only exercises for today's muscle groups may enter the main block, so an
+        # Upper Body day never gets leg exercises (and the other way round).
+        today_pool = resistance_pool[resistance_pool["major_muscle_group"].isin(session["groups"])]
+
+        # Phase 0 (feature 6): guarantee the minimum number of one-limb exercises
+        # for today's muscle groups (skipped if there is none).
+        unilateral_today = today_pool[today_pool["movement_type"] == "unilateral"]
         for enforce in (True, False):
-            for pool in (unilateral_today, unilateral_pool):
-                for _, row in pool.iterrows():
-                    if unilateral_count() >= MIN_UNILATERAL_PER_SESSION:
-                        break
-                    try_add(row, enforce)
+            for _, row in unilateral_today.iterrows():
+                if unilateral_count() >= MIN_UNILATERAL_PER_SESSION:
+                    break
+                try_add(row, enforce)
 
         # Phase 1: cover each muscle group in today's template (one exercise each).
         for muscle_group in session["groups"]:
@@ -664,10 +694,11 @@ def assemble_weekly_plan(ranked, profile, feedback):
                 if try_add(row, True):
                     break
 
-        # Phase 2 (feature 1): keep adding the next best exercise WHILE time remains.
-        # First respecting muscle variety, then relaxing it if the window is still unfilled.
+        # Phase 2 (feature 1): keep adding the next best exercise for today's muscle groups
+        # WHILE time remains. First respecting muscle variety, then relaxing it if the window
+        # is still unfilled. If today's groups run out, the session is simply shorter.
         for enforce in (True, False):
-            queue = [row for _, row in resistance_pool.iterrows()]
+            queue = [row for _, row in today_pool.iterrows()]
             idx = 0
             while idx < len(queue) and len(chosen) < MAX_RESISTANCE_EXERCISES and state["time"] < main_budget:
                 try_add(queue[idx], enforce)
@@ -737,7 +768,7 @@ def generate_plan():
         "age": p.get("age"),
         "fitness_goal": p.get("goal"),
         "workout_location": p.get("location"),
-        "available_equipment": p.get("equipment"),
+        "available_equipment": p.get("equipment") or [],
         "preferred_days_per_week": p.get("days"),
         "session_duration_minutes": p.get("duration"),
         "self_rated_fitness_level": p.get("level"),
@@ -792,30 +823,31 @@ def purge_blacklisted(plan_df, rated_days):
 # =============================================================================
 # (feature 3) PROGRESSIVE OVERLOAD ENGINE
 # =============================================================================
-def apply_too_easy(prog, max_extra_sets=MAX_EXTRA_SETS):
+def apply_too_easy(prog, max_extra_sets=MAX_EXTRA_SETS, can_cut_rest=True, can_unlock=True):
     """A 'Too Easy' week pulls ONE lever (sets -> rest -> harder variants, rotating)
-    so we never change everything at once."""
+    so we never change everything at once. A lever that would have no effect
+    (rest already at the minimum, no harder level above) is skipped."""
     for _ in range(len(OVERLOAD_LEVERS)):
         lever = OVERLOAD_LEVERS[prog["overload_cursor"] % len(OVERLOAD_LEVERS)]
         prog["overload_cursor"] += 1
         if lever == "sets" and prog["extra_sets"] < max_extra_sets:
             prog["extra_sets"] += 1
             return "Too Easy -> added 1 set to strength exercises."
-        if lever == "rest" and prog["rest_delta"] > -MAX_REST_REDUCTION:
+        if lever == "rest" and can_cut_rest and prog["rest_delta"] > -MAX_REST_REDUCTION:
             prog["rest_delta"] -= 15
             return "Too Easy -> reduced rest by 15 seconds."
-        if lever == "difficulty" and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
+        if lever == "difficulty" and can_unlock and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
             prog["difficulty_bump"] += 1
             return "Too Easy -> unlocked harder exercise variants."
     return "Too Easy -> already at the app's progression limits; try using heavier weights."
 
 
-def apply_perfect_streak(prog):
+def apply_perfect_streak(prog, can_unlock=True):
     """After enough 'Perfect' weeks: bump reps first, then unlock harder variants."""
     if prog["reps_bump"] < MAX_REPS_BUMP:
         prog["reps_bump"] += REPS_BUMP_STEP
         return f"{STREAK_FOR_REP_BUMP} Perfect weeks in a row -> rep targets +{REPS_BUMP_STEP}."
-    if prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
+    if can_unlock and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
         prog["difficulty_bump"] += 1
         prog["reps_bump"] = 0
         return "Rep targets maxed out -> unlocked harder exercise variants and reset reps."
@@ -839,7 +871,7 @@ def apply_too_hard(prog):
     return "Too Hard -> already at baseline; consider lighter weights."
 
 
-def evaluate_week(prog, ratings, max_extra_sets=MAX_EXTRA_SETS):
+def evaluate_week(prog, ratings, max_extra_sets=MAX_EXTRA_SETS, can_cut_rest=True, can_unlock=True):
     """Look at this week's session ratings and update the progression state.
     Priority: any 'Too Hard' (safety) > any 'Too Easy' > all 'Perfect'."""
     if not ratings:
@@ -849,21 +881,28 @@ def evaluate_week(prog, ratings, max_extra_sets=MAX_EXTRA_SETS):
         return [apply_too_hard(prog)]
     if "Too Easy" in ratings:
         prog["perfect_streak"] = 0
-        return [apply_too_easy(prog, max_extra_sets)]
+        return [apply_too_easy(prog, max_extra_sets, can_cut_rest, can_unlock)]
     prog["perfect_streak"] += 1
     if prog["perfect_streak"] >= STREAK_FOR_REP_BUMP:
         prog["perfect_streak"] = 0
-        return [apply_perfect_streak(prog)]
+        return [apply_perfect_streak(prog, can_unlock)]
     return [f"Perfect week {prog['perfect_streak']} of {STREAK_FOR_REP_BUMP} - one more to progress."]
 
 
 def finish_week():
     """Apply progression, move to the next week and build its plan."""
     week = st.session_state.week_number
-    level = str(st.session_state.profile.get("level", "Beginner")).lower()
-    cap = BEGINNER_MAX_EXTRA_SETS if LEVEL_RANK.get(level, 1) == 1 else MAX_EXTRA_SETS
-    messages = evaluate_week(st.session_state.progression,
-                             list(st.session_state.week_feedback.values()), cap)
+    profile = st.session_state.profile
+    prog = st.session_state.progression
+    level_rank = LEVEL_RANK.get(str(profile.get("level", "Beginner")).lower(), 1)
+    cap = BEGINNER_MAX_EXTRA_SETS if level_rank == 1 else MAX_EXTRA_SETS
+    # Is a 15 s rest cut still possible for this goal and level? Is there a harder level left?
+    user_goal = goal_key(str(profile.get("goal", "General Fitness")).lower().replace(" ", "_"))
+    min_rest = max(MIN_REST_SECONDS, GOAL_RANGES[user_goal]["rest"][0])
+    can_cut_rest = base_prescription(user_goal, level_rank)[3] + prog["rest_delta"] - 15 >= min_rest
+    can_unlock = level_rank + prog["difficulty_bump"] < 3
+    messages = evaluate_week(prog, list(st.session_state.week_feedback.values()), cap,
+                             can_cut_rest, can_unlock)
     for message in messages:
         st.session_state.progression["history"].append(f"Week {week}: {message}")
     st.session_state.week_number += 1
@@ -1161,12 +1200,21 @@ def page_profile():
 
     # options come straight from the knowledge base, so every choice matches real exercises
     equipment_options = equipment_choices(exercise_kb)
+    saved = p.get('equipment')
+    if "equip_ms" not in st.session_state:          # first time the form is shown
+        st.session_state.equip_ms = (list(equipment_options) if saved is None and location == "Gym"
+                                     else [e for e in (saved or []) if e in equipment_options])
+    elif st.session_state.get("_loc_sig") not in (None, location) and location == "Gym":
+        st.session_state.equip_ms = list(equipment_options)   # switched to Gym -> tick everything
+    st.session_state["_loc_sig"] = location
     equipment = st.multiselect(
         "Available Equipment",
         equipment_options,
-        default=[e for e in p['equipment'] if e in equipment_options],   # drop old choices that no longer exist
+        key="equip_ms",
         help="Bodyweight exercises are always included. Only equipment used by at least one exercise is listed."
     )
+    if location == "Gym":
+        st.caption("At the gym all equipment is ticked. Untick anything your gym does not have.")
 
     # --- days per week: recommendation pops up once level + goal are chosen ---
     d_lo, d_hi = days_recommendation(level, goal)
@@ -1261,6 +1309,20 @@ def page_plan():
 
     session_minutes = int(p.get("duration", 60))
 
+    # A week normally ends when every day is rated. If the user skipped a workout,
+    # they can end the week here so progression does not get stuck.
+    n_rated, n_days = len(st.session_state.week_feedback), plan_df["Day"].nunique()
+    if 0 < n_rated < n_days:
+        with st.container(border=True):
+            st.write(f"You have rated {n_rated} of {n_days} workouts this week.")
+            if st.button("Finish this week now (skip the unrated workouts)"):
+                week = st.session_state.week_number
+                messages = finish_week()
+                st.session_state.flash = ("success", f"Week {week} complete. " + " ".join(messages)
+                                          + f" Week {week + 1}'s plan is ready.")
+                navigate_to('progress')
+                st.rerun()
+
     for day in plan_df['Day'].unique():
         day_data = plan_df[plan_df['Day'] == day]
         rated = day in st.session_state.week_feedback
@@ -1268,6 +1330,10 @@ def page_plan():
         total_minutes = day_data["Seconds"].sum() / 60
         st.caption(f"Estimated time: ~{total_minutes:.0f} min of your {session_minutes} min window"
                    + (" ✅ feedback submitted" if rated else ""))
+        if total_minutes < 0.8 * session_minutes:
+            st.caption(f"⚠️ This day is shorter than your chosen time: there are not enough "
+                       f"{day_data['Focus'].iloc[0].split(' + ')[0]} exercises for your equipment and location. "
+                       "Adding equipment in your profile gives more options.")
 
         # One table per day, ordered Warm-up -> Main -> Finisher -> Cooldown.
         ordered = day_data.assign(_s=day_data["Section"].map(SECTION_ORDER.index)).sort_values("_s", kind="stable")
@@ -1375,7 +1441,12 @@ def page_exercise_detail():
         reasons += "\n    ✓ Compound lift, placed early in your session while you are fresh"
     if ex["Movement"] == "Unilateral":
         reasons += "\n    ✓ One-sided movement, which helps balance strength between your left and right"
+    if kb_row is not None and str(kb_row.get("rating", "")).strip() not in ("", "nan"):
+        reasons += f"\n    ✓ Highly rated by other users ({float(kb_row['rating']):.1f} / 10 on megaGym)"
     st.success(reasons)
+    if "Score" in ex and str(ex["Score"]) not in ("", "nan"):
+        st.caption(f"Match score: {float(ex['Score']):.2f}. It is higher when the exercise is at your level, "
+                   "uses equipment you own, is highly rated and suits your goal.")
 
 
 def page_feedback():
