@@ -122,7 +122,8 @@ _defaults = {
     "selected_exercise": None,
     "completed_workouts": 0,
     "progression": new_progression(),   # overload state
-    "weights": {},                      # {exercise_name: kg} typed in by the user
+    "weights": {},                      # {exercise_name: kg} counted weights (days with feedback submitted)
+    "weight_drafts": {},                # {day: {exercise_name: kg}} typed but NOT counted until that day's feedback is submitted
     "weight_log": [],                   # [{"week", "exercise", "kg"}] one entry per exercise per week
     "week_number": 1,
     "week_feedback": {},                # {day: "Too Easy"/"Perfect"/"Too Hard"} for this week
@@ -884,6 +885,7 @@ def finish_week():
         prog["history"].append(f"Week {week}: {message}")
     st.session_state.week_number += 1
     st.session_state.week_feedback = {}
+    st.session_state.weight_drafts = {}      # weights typed for skipped (unrated) days are not counted
     st.session_state.weekly_plan = generate_plan()
     return messages
 
@@ -918,7 +920,7 @@ PIN_ITERATIONS = 200_000
 # session_state keys that are saved for a logged-in user
 PERSISTED_KEYS = ["profile", "feedback", "weekly_plan", "completed_workouts", "progression",
                   "week_number", "week_feedback", "session_log",
-                  "blacklisted_exercises", "blacklisted_patterns", "weights", "weight_log"]
+                  "blacklisted_exercises", "blacklisted_patterns", "weights", "weight_drafts", "weight_log"]
 
 
 @st.cache_resource
@@ -1287,7 +1289,8 @@ def page_plan():
                    "and type the new weight in the table. Your reps start again from the lower number.")
     st.info("**Choosing your weight:** pick a weight you can lift comfortably for every rep with good form. "
             "The last 2 reps should feel hard but still controlled. If you cannot finish the reps, go lighter. "
-            "Type the weight you use in the **Weight (kg)** column so you can follow your progress. "
+            "Type the weight you use in the **Weight (kg)** column. It only counts towards your progress "
+            "once you submit the feedback for that day. "
             "Sets stay the same every week: you progress by adding reps, then weight.")
 
     if st.button("⌂ Back to Home"):
@@ -1334,10 +1337,12 @@ def page_plan():
         # Only main exercises that use weights get a weight. Others show "—".
         uses_weight = (table["Section"] == "Main") & table["Equipment"].map(is_weighted)
         # Weighted exercises get an empty box to type in (or the saved weight); the others show "—".
+        # Before the day's feedback is submitted, typed weights are only drafts for THAT day.
+        drafts = st.session_state.weight_drafts.setdefault(day, {})
         def weight_text(name, ok):
             if not ok:
                 return "—"
-            kg = st.session_state.weights.get(name)
+            kg = drafts.get(name, st.session_state.weights.get(name)) if not rated else st.session_state.weights.get(name)
             return "" if kg is None else f"{kg:g}"
         table["Weight (kg)"] = [weight_text(name, ok) for name, ok in zip(table["Exercise"], uses_weight)]
         # the weight sits next to the sets and reps so it is visible without scrolling sideways
@@ -1357,9 +1362,18 @@ def page_plan():
         )
         for name, ok, text in zip(edited["Exercise"], uses_weight, edited["Weight (kg)"]):
             text = str(text or "").replace(",", ".").strip()
-            if ok and re.fullmatch(r"\d{1,3}(\.\d{1,2})?", text) and float(text) > 0 \
-                    and st.session_state.weights.get(name) != float(text):
-                save_weight(name, float(text))
+            if not ok:
+                continue
+            valid = bool(re.fullmatch(r"\d{1,3}(\.\d{1,2})?", text)) and float(text or 0) > 0
+            if rated:       # feedback already submitted: a correction counts straight away
+                if valid and st.session_state.weights.get(name) != float(text):
+                    save_weight(name, float(text))
+            elif valid and drafts.get(name, st.session_state.weights.get(name)) != float(text):
+                drafts[name] = float(text)       # draft only; counted when this day's feedback is submitted
+            elif text == "" and name in drafts:
+                del drafts[name]
+        if not rated:
+            st.caption("Weights you type here count towards your progress once you submit this day's feedback.")
         # typed into a row that has no weight (shown as —): put the — back
         if any((not ok) and str(text) != "—" for ok, text in zip(uses_weight, edited["Weight (kg)"])):
             st.session_state["_editor_reset"] = st.session_state.get("_editor_reset", 0) + 1
@@ -1524,6 +1538,15 @@ def page_feedback():
                 db_log_feedback(st.session_state.user_id, st.session_state.nickname, st.session_state.session_log[-1])
             except Exception:
                 pass                                 # the full state is still saved by autosave()
+
+        # Count this day's weights now that its feedback is submitted: the typed weight,
+        # or the last saved weight if the user left the box as it was.
+        typed = st.session_state.weight_drafts.pop(day, {})
+        main_today = plan_df[(plan_df["Day"] == day) & (plan_df["Section"] == "Main")]
+        for name, equipment in zip(main_today["Exercise"], main_today["Equipment"]):
+            kg = typed.get(name, st.session_state.weights.get(name))
+            if kg and is_weighted(equipment):
+                save_weight(name, kg)
 
         # Joint pain: ban now, and clean up the rest of this week's plan.
         for name in joint_pain:
