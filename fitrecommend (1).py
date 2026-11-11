@@ -34,15 +34,15 @@ COUNT_WARMUP_COOLDOWN_IN_DURATION = True   # True: warm-up + cooldown come out o
 MAX_RESISTANCE_EXERCISES = 8        # safety cap so very long sessions don't explode
 MIN_UNILATERAL_PER_SESSION = 1      # at least this many one-limb exercises per session
 
-# Progressive-overload limits (see evaluate_week below)
-MAX_EXTRA_SETS = 2                  # never add more than +2 sets
-MAX_REST_REDUCTION = 30             # never cut rest by more than 30 s in total
-MIN_REST_SECONDS = 30               # rest never goes below this
-REPS_BUMP_STEP = 1                  # e.g. 10 -> 11 reps
-MAX_REPS_BUMP = 2                   # at most +4 reps before a harder variant is unlocked
+# Progressive-overload settings (see evaluate_week below).
+# Sets never change. Each week the reps go up; when they reach the top of the rep
+# target, the user adds weight and the reps start again ("double progression").
+PERFECT_REP_STEP = 1                # a "Perfect" week adds 1 rep per set
+EASY_REP_STEP = 2                   # a "Too Easy" week adds 2 reps per set
+MAX_BODYWEIGHT_EXTRA_REPS = 10      # exercises without weights can grow this far above the start
 MAX_DIFFICULTY_BUMP = 1             # allow at most ONE tier above the self-rated level
-STREAK_FOR_REP_BUMP = 1             # "Perfect" weeks in a row needed to bump reps
-OVERLOAD_LEVERS = ["sets", "rest", "difficulty"]   # rotated when a week is "Too Easy"
+# Equipment whose load the user chooses in kg (everything else progresses by reps only).
+WEIGHTED_EQUIPMENT = {"dumbbells", "barbell", "e-z curl bar", "kettlebells", "machine", "cable", "medicine ball"}
 
 # Feedback tag names
 TAG_TOO_HEAVY = "Too Heavy"
@@ -53,7 +53,6 @@ TAG_JOINT_PAIN = "Joint Pain"
 MIN_AGE = 18                        # the app is for adults
 SENIOR_AGE = 50                     # from this age: no jump / plyometric exercises, slightly more rest
 SENIOR_EXTRA_REST = 15              # seconds added to rest on strength exercises
-BEGINNER_MAX_EXTRA_SETS = 1         # beginners never get more than +1 set from progression
 
 LEVEL_RANK = {"beginner": 1, "intermediate": 2, "advanced": 3}
 LEVEL_NAMES = {1: "beginner", 2: "intermediate", 3: "advanced"}
@@ -103,15 +102,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def new_progression():
-    """Baseline state for progressive overload engine. Memory of how much difficulty increased"""
+    """Starting state of the progressive overload engine."""
     return {
-        "extra_sets": 0,        # sets added on top of the normal prescription
-        "rest_delta": 0,        # seconds added to rest (negative = shorter rest)
-        "reps_bump": 0,         # reps added to the rep target
-        "difficulty_bump": 0,   # how many tiers above your level we may recommend
-        "perfect_streak": 0,    # consecutive weeks rated "Perfect"
-        "overload_cursor": 0,   # which lever to pull next on a "Too Easy" week
-        "history": [],          # human-readable log shown on the Progress page
+        "reps_bump": 0,          # reps added for weighted exercises (goes back to 0 when weight goes up)
+        "bodyweight_reps": 0,    # reps added for exercises without weights (never resets)
+        "weight_stage": 0,       # how many times the plan has told the user to add weight
+        "weight_up_week": 0,     # week number in which a weight increase applies (0 = none)
+        "difficulty_bump": 0,    # how many tiers above your level we may recommend
+        "history": [],           # human-readable log shown on the Progress page
     }
 
 
@@ -124,6 +122,8 @@ _defaults = {
     "selected_exercise": None,
     "completed_workouts": 0,
     "progression": new_progression(),   # overload state
+    "weights": {},                      # {exercise_name: kg} typed in by the user
+    "weight_log": [],                   # [{"week", "exercise", "kg"}] one entry per exercise per week
     "week_number": 1,
     "week_feedback": {},                # {day: "Too Easy"/"Perfect"/"Too Hard"} for this week
     "session_log": [],                  # one entry per rated session
@@ -252,13 +252,6 @@ def safety_filter(exercises, profile, feedback):
     # NOTE: "Too Hard"-style feedback no longer REMOVES exercises. "Too Heavy" now only
     # lowers the ranking score (see rank_exercises); only Joint Pain removes exercises.
     return rows.reset_index(drop=True)
-
-
-def goal_category(goal):
-    goal = str(goal).lower().replace(" ", "_")
-    if goal in {"muscle_gain", "strength"}: return "resistance"
-    if goal == "weight_loss": return "cardio"
-    return "mixed"
 
 
 def training_days(profile, n_days):
@@ -434,8 +427,8 @@ def cardio_minutes(session_minutes, user_goal="general_fitness", level_rank=2):
     return int(np.clip(round(session_minutes * 0.2 / 5) * 5, 5, 20))
 
 
-# Prescription ranges by goal (reps, sets, rest in seconds). Progression can move
-# the numbers around, but they are always clamped back into these ranges.
+# Reference ranges by goal (reps, sets, rest in seconds). The starting values below sit
+# inside these ranges; the top of the rep range is the limit for exercises without weights.
 #   Goal in the app   -> row of the reference table
 #   Strength          -> Maximal strength   (1-6 reps, 2-4 sets, 3-5 min rest)
 #   Muscle Gain       -> Muscle hypertrophy (5-30 reps, 2-4 sets, 1-3 min rest)
@@ -474,10 +467,22 @@ def base_prescription(user_goal, level_rank=2):
     return (BEGINNER_START if level_rank <= 1 else EXPERIENCED_START)[key]
 
 
+def is_weighted(equipment):
+    """True when the user picks the load in kg (dumbbells, barbell, machine ...)."""
+    return str(equipment).strip().lower() in WEIGHTED_EQUIPMENT
+
+
+def rep_limits(user_goal, level_rank=2):
+    """(start reps, top reps for weighted exercises, top reps for exercises without weights)."""
+    _, low, high, _ = base_prescription(user_goal, level_rank)
+    goal_top = GOAL_RANGES[goal_key(user_goal)]["reps"][1]
+    return low, high, min(goal_top, low + MAX_BODYWEIGHT_EXTRA_REPS)
+
+
 def prescribe_exercise(row, user_goal, session_minutes, progression, feedback, section, level_rank=2, age=0):
     """work out sets, reps, rest AND the estimated duration of one exercise.
-    This applies the overload state (extra sets, shorter rest, more reps) and the
-    'Cardiovascularly Exhausting' tag (more rest / shorter cardio)."""
+    Sets and rest are fixed by goal and level. Reps are ONE number that grows with the
+    overload state. The 'Cardiovascularly Exhausting' tag adds rest / shortens cardio."""
     category = str(row["exercise_category"]).lower()
     tags = feedback.get(row["exercise_name"], {})
     exhausted = min(tags.get(TAG_EXHAUSTING, 0), 2)
@@ -498,26 +503,20 @@ def prescribe_exercise(row, user_goal, session_minutes, progression, feedback, s
     suffix = " per side" if sides == 2 else ""
 
     if category == "plyometrics":
-        sets, low, high, rest = 3, 10, 15, 60
+        sets, reps, rest = 3, 10, 60
     else:
-        sets, low, high, rest = base_prescription(user_goal, level_rank)
-        sets += (min(progression["extra_sets"], BEGINNER_MAX_EXTRA_SETS) if level_rank <= 1 else progression["extra_sets"])                          # overload: more sets
-        low += progression["reps_bump"]                            # overload: more reps
-        high += progression["reps_bump"]
-        rest = max(MIN_REST_SECONDS, rest + progression["rest_delta"])   # overload: less rest
-        # keep everything inside the reference ranges for this goal
-        limits = GOAL_RANGES[goal_key(user_goal)]
-        sets = int(np.clip(sets, *limits["sets"]))
-        high = min(high, limits["reps"][1])
-        low = min(low, high)
-        rest = int(np.clip(rest, *limits["rest"]))
+        sets, _, _, rest = base_prescription(user_goal, level_rank)
+        low, top_weighted, top_bodyweight = rep_limits(user_goal, level_rank)
+        if is_weighted(row["equipment_needed"]):
+            reps = min(low + progression["reps_bump"], top_weighted)        # then the weight goes up
+        else:
+            reps = min(low + progression["bodyweight_reps"], top_bodyweight)
     rest += 15 * exhausted
     if age >= SENIOR_AGE:
         rest += SENIOR_EXTRA_REST     # a little more recovery for users aged 50+
 
-    reps_for_timing = round((low + high) / 2)    # use the middle of the rep range
-    seconds = estimate_exercise_seconds(sets, reps_for_timing, rest, sides)
-    return {"sets": sets, "reps": f"{low}–{high} reps{suffix}", "rest": f"{rest} seconds",
+    seconds = estimate_exercise_seconds(sets, reps, rest, sides)
+    return {"sets": sets, "reps": f"{reps} reps{suffix}", "rest": f"{rest} seconds",
             "seconds": seconds, "setup": SETUP_SECONDS_PER_EXERCISE}
 
 
@@ -823,70 +822,49 @@ def purge_blacklisted(plan_df, rated_days):
 # =============================================================================
 # (feature 3) PROGRESSIVE OVERLOAD ENGINE
 # =============================================================================
-def apply_too_easy(prog, max_extra_sets=MAX_EXTRA_SETS, can_cut_rest=True, can_unlock=True):
-    """A 'Too Easy' week pulls ONE lever (sets -> rest -> harder variants, rotating)
-    so we never change everything at once. A lever that would have no effect
-    (rest already at the minimum, no harder level above) is skipped."""
-    for _ in range(len(OVERLOAD_LEVERS)):
-        lever = OVERLOAD_LEVERS[prog["overload_cursor"] % len(OVERLOAD_LEVERS)]
-        prog["overload_cursor"] += 1
-        if lever == "sets" and prog["extra_sets"] < max_extra_sets:
-            prog["extra_sets"] += 1
-            return "Too Easy -> added 1 set to strength exercises."
-        if lever == "rest" and can_cut_rest and prog["rest_delta"] > -MAX_REST_REDUCTION:
-            prog["rest_delta"] -= 15
-            return "Too Easy -> reduced rest by 15 seconds."
-        if lever == "difficulty" and can_unlock and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
-            prog["difficulty_bump"] += 1
-            return "Too Easy -> unlocked harder exercise variants."
-    return "Too Easy -> already at the app's progression limits; try using heavier weights."
-
-
-def apply_perfect_streak(prog, can_unlock=True):
-    """After enough 'Perfect' weeks: bump reps first, then unlock harder variants."""
-    if prog["reps_bump"] < MAX_REPS_BUMP:
-        prog["reps_bump"] += REPS_BUMP_STEP
-        return f"{STREAK_FOR_REP_BUMP} Perfect weeks in a row -> rep targets +{REPS_BUMP_STEP}."
-    if can_unlock and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
-        prog["difficulty_bump"] += 1
+def apply_progress(prog, step, label, rep_span, bodyweight_span, can_unlock=True):
+    """A 'Perfect' or 'Too Easy' week. Reps go up by `step`. If the reps were already at
+    the top of the target, the user adds weight instead and the reps start again."""
+    prog["bodyweight_reps"] = min(bodyweight_span, prog["bodyweight_reps"] + step)
+    if prog["reps_bump"] >= rep_span:
         prog["reps_bump"] = 0
-        return "Rep targets maxed out -> unlocked harder exercise variants and reset reps."
-    return "Perfect streak -> already at the progression limits; try using heavier weights."
+        prog["weight_stage"] += 1
+        message = (f"{label} -> you reached the top of the rep target. Add a little weight "
+                   "(the next size up) and start again from the lower reps.")
+        if can_unlock and prog["difficulty_bump"] < MAX_DIFFICULTY_BUMP:
+            prog["difficulty_bump"] += 1
+            message += " Harder exercises are now unlocked."
+        return message, True
+    added = min(step, rep_span - prog["reps_bump"])
+    prog["reps_bump"] += added
+    return f"{label} -> +{added} rep{'s' if added > 1 else ''} per set, same weight.", False
 
 
 def apply_too_hard(prog):
     """A 'Too Hard' week steps ONE change back so you can recover."""
-    if prog["extra_sets"] > 0:
-        prog["extra_sets"] -= 1
-        return "Too Hard -> removed 1 extra set."
-    if prog["rest_delta"] < 0:
-        prog["rest_delta"] += 15
-        return "Too Hard -> restored 15 seconds of rest."
-    if prog["reps_bump"] > 0:
-        prog["reps_bump"] -= REPS_BUMP_STEP
-        return f"Too Hard -> lowered rep targets by {REPS_BUMP_STEP}."
+    if prog["reps_bump"] > 0 or prog["bodyweight_reps"] > 0:
+        prog["reps_bump"] = max(0, prog["reps_bump"] - 1)
+        prog["bodyweight_reps"] = max(0, prog["bodyweight_reps"] - 1)
+        return "Too Hard -> 1 rep less per set."
     if prog["difficulty_bump"] > 0:
         prog["difficulty_bump"] -= 1
         return "Too Hard -> went back to your original exercise difficulty."
-    return "Too Hard -> already at baseline; consider lighter weights."
+    return "Too Hard -> you are at the starting reps; use a lighter weight this week."
 
 
-def evaluate_week(prog, ratings, max_extra_sets=MAX_EXTRA_SETS, can_cut_rest=True, can_unlock=True):
+def evaluate_week(prog, ratings, rep_span, bodyweight_span, can_unlock=True):
     """Look at this week's session ratings and update the progression state.
-    Priority: any 'Too Hard' (safety) > any 'Too Easy' > all 'Perfect'."""
+    Priority: any 'Too Hard' (safety) > any 'Too Easy' > all 'Perfect'.
+    Returns (messages, weight_goes_up)."""
     if not ratings:
-        return ["No sessions were rated this week, so nothing changed."]
+        return ["No sessions were rated this week, so nothing changed."], False
     if "Too Hard" in ratings:
-        prog["perfect_streak"] = 0
-        return [apply_too_hard(prog)]
+        return [apply_too_hard(prog)], False
     if "Too Easy" in ratings:
-        prog["perfect_streak"] = 0
-        return [apply_too_easy(prog, max_extra_sets, can_cut_rest, can_unlock)]
-    prog["perfect_streak"] += 1
-    if prog["perfect_streak"] >= STREAK_FOR_REP_BUMP:
-        prog["perfect_streak"] = 0
-        return [apply_perfect_streak(prog, can_unlock)]
-    return [f"Perfect week {prog['perfect_streak']} of {STREAK_FOR_REP_BUMP} - one more to progress."]
+        message, weight_up = apply_progress(prog, EASY_REP_STEP, "Too Easy", rep_span, bodyweight_span, can_unlock)
+    else:
+        message, weight_up = apply_progress(prog, PERFECT_REP_STEP, "Perfect", rep_span, bodyweight_span, can_unlock)
+    return [message], weight_up
 
 
 def finish_week():
@@ -895,20 +873,28 @@ def finish_week():
     profile = st.session_state.profile
     prog = st.session_state.progression
     level_rank = LEVEL_RANK.get(str(profile.get("level", "Beginner")).lower(), 1)
-    cap = BEGINNER_MAX_EXTRA_SETS if level_rank == 1 else MAX_EXTRA_SETS
-    # Is a 15 s rest cut still possible for this goal and level? Is there a harder level left?
     user_goal = goal_key(str(profile.get("goal", "General Fitness")).lower().replace(" ", "_"))
-    min_rest = max(MIN_REST_SECONDS, GOAL_RANGES[user_goal]["rest"][0])
-    can_cut_rest = base_prescription(user_goal, level_rank)[3] + prog["rest_delta"] - 15 >= min_rest
-    can_unlock = level_rank + prog["difficulty_bump"] < 3
-    messages = evaluate_week(prog, list(st.session_state.week_feedback.values()), cap,
-                             can_cut_rest, can_unlock)
+    low, top_weighted, top_bodyweight = rep_limits(user_goal, level_rank)
+    can_unlock = level_rank + prog["difficulty_bump"] < 3      # is there a harder level left?
+    messages, weight_up = evaluate_week(prog, list(st.session_state.week_feedback.values()),
+                                        top_weighted - low, top_bodyweight - low, can_unlock)
+    if weight_up:
+        prog["weight_up_week"] = week + 1
     for message in messages:
-        st.session_state.progression["history"].append(f"Week {week}: {message}")
+        prog["history"].append(f"Week {week}: {message}")
     st.session_state.week_number += 1
     st.session_state.week_feedback = {}
     st.session_state.weekly_plan = generate_plan()
     return messages
+
+
+def save_weight(exercise, kg):
+    """Remember the weight the user typed in, and log it once per week for the Progress page."""
+    week = st.session_state.week_number
+    st.session_state.weights[exercise] = kg
+    log = [e for e in st.session_state.weight_log if not (e["week"] == week and e["exercise"] == exercise)]
+    log.append({"week": week, "exercise": exercise, "kg": kg})
+    st.session_state.weight_log = log
 
 
 def record_tag(name, tag):
@@ -932,7 +918,7 @@ PIN_ITERATIONS = 200_000
 # session_state keys that are saved for a logged-in user
 PERSISTED_KEYS = ["profile", "feedback", "weekly_plan", "completed_workouts", "progression",
                   "week_number", "week_feedback", "session_log",
-                  "blacklisted_exercises", "blacklisted_patterns"]
+                  "blacklisted_exercises", "blacklisted_patterns", "weights", "weight_log"]
 
 
 @st.cache_resource
@@ -1044,6 +1030,10 @@ def restore_state(data):
             value = set(value)
         elif key == "blacklisted_patterns":
             value = {tuple(p) for p in value}
+        elif key == "progression":
+            # accounts saved by an older version: keep only the fields that still exist
+            fresh = new_progression()
+            value = {**fresh, **{k: v for k, v in value.items() if k in fresh}}
         st.session_state[key] = value
 
 
@@ -1290,12 +1280,15 @@ def page_plan():
     p = st.session_state.profile
     prog = st.session_state.progression
     st.caption(f"**Week {st.session_state.week_number}** | **Goal:** {p.get('goal')} | **Level:** {p.get('level')} | **{p.get('days')} Days / Week**")
-    # show the overload adjustments currently applied
-    st.caption(
-        f"Made harder so far: +{prog['extra_sets']} sets, "
-        f"{abs(prog['rest_delta'])}s less rest, +{prog['reps_bump']} reps, "
-        f"harder exercises: {'unlocked' if prog['difficulty_bump'] else 'not yet'}")
     show_flash()
+    if prog["weight_up_week"] == st.session_state.week_number:
+        st.success("🏋️ **Time to add weight.** You reached the top of your rep target last week. "
+                   "For exercises with weights, pick the next size up (about 1-2.5 kg more) "
+                   "and type the new weight in the table. Your reps start again from the lower number.")
+    st.info("**Choosing your weight:** pick a weight you can lift comfortably for every rep with good form. "
+            "The last 2 reps should feel hard but still controlled. If you cannot finish the reps, go lighter. "
+            "Type the weight you use in the **Weight (kg)** column so you can follow your progress. "
+            "Sets stay the same every week: you progress by adding reps, then weight.")
 
     if st.button("⌂ Back to Home"):
         navigate_to('home')
@@ -1337,8 +1330,41 @@ def page_plan():
 
         # One table per day, ordered Warm-up -> Main -> Finisher -> Cooldown.
         ordered = day_data.assign(_s=day_data["Section"].map(SECTION_ORDER.index)).sort_values("_s", kind="stable")
-        table = ordered[["Section", "Exercise", "Target", "Type", "Movement", "Sets", "Reps", "Rest"]]
-        st.dataframe(table, hide_index=True, use_container_width=True)
+        table = ordered[["Section", "Exercise", "Target", "Type", "Movement", "Equipment", "Sets", "Reps", "Rest"]].reset_index(drop=True)
+        # Only main exercises that use weights get a weight. Others show "—".
+        uses_weight = (table["Section"] == "Main") & table["Equipment"].map(is_weighted)
+        # Weighted exercises get an empty box to type in (or the saved weight); the others show "—".
+        def weight_text(name, ok):
+            if not ok:
+                return "—"
+            kg = st.session_state.weights.get(name)
+            return "" if kg is None else f"{kg:g}"
+        table["Weight (kg)"] = [weight_text(name, ok) for name, ok in zip(table["Exercise"], uses_weight)]
+        # the weight sits next to the sets and reps so it is visible without scrolling sideways
+        table = table[["Section", "Exercise", "Sets", "Reps", "Weight (kg)", "Rest",
+                       "Equipment", "Target", "Type", "Movement"]]
+        edited = st.data_editor(
+            table, hide_index=True, use_container_width=True,
+            height=35 * (len(table) + 1) + 3,          # show every row, no scrolling inside the table
+            key=f"plan_{st.session_state.week_number}_{day}_{st.session_state.get('_editor_reset', 0)}",
+            disabled=[c for c in table.columns if c != "Weight (kg)"],
+            column_config={"Section": st.column_config.TextColumn(width="small"),
+                           "Sets": st.column_config.TextColumn(width="small"),
+                           "Weight (kg)": st.column_config.TextColumn(
+                "Weight (kg)", max_chars=6, validate=r"^(\d{1,3}([.,]\d{1,2})?)?$",
+                help="Type the weight you use, for example 12.5. Only for exercises with weights; "
+                     "rows marked — (bodyweight, band and timed exercises) do not need one.")},
+        )
+        for name, ok, text in zip(edited["Exercise"], uses_weight, edited["Weight (kg)"]):
+            text = str(text or "").replace(",", ".").strip()
+            if ok and re.fullmatch(r"\d{1,3}(\.\d{1,2})?", text) and float(text) > 0 \
+                    and st.session_state.weights.get(name) != float(text):
+                save_weight(name, float(text))
+        # typed into a row that has no weight (shown as —): put the — back
+        if any((not ok) and str(text) != "—" for ok, text in zip(uses_weight, edited["Weight (kg)"])):
+            st.session_state["_editor_reset"] = st.session_state.get("_editor_reset", 0) + 1
+            st.toast("That exercise does not use weights, so there is nothing to type there.")
+            st.rerun()
 
         col1, col2 = st.columns(2)
         with col1:
@@ -1538,30 +1564,64 @@ def page_progress():
         col3.metric("Current Week", st.session_state.week_number)
 
     prog = st.session_state.progression
-    st.subheader("How your plan has been made harder")
-    st.caption("Your plan gets a little harder when you tell us your workouts feel too easy. "
-               "Here is what has changed so far:")
-    extra = prog['extra_sets']
-    rest = prog['rest_delta']
-    reps = prog['reps_bump']
-    streak = prog['perfect_streak']
+    profile = st.session_state.profile
+    level_rank = LEVEL_RANK.get(str(profile.get("level", "Beginner")).lower(), 1)
+    user_goal = goal_key(str(profile.get("goal", "General Fitness")).lower().replace(" ", "_"))
+    sets, _, _, _ = base_prescription(user_goal, level_rank)
+    low, top_weighted, top_bodyweight = rep_limits(user_goal, level_rank)
+    reps_now = min(low + prog["reps_bump"], top_weighted)
+    bodyweight_now = min(low + prog["bodyweight_reps"], top_bodyweight)
+
+    st.subheader("How your plan progresses")
+    st.caption("Your sets stay the same every week. You get stronger by adding reps first, then weight.")
     st.markdown(f"""
-    * **Extra sets:** {f"+{extra} set per exercise" if extra == 1 else (f"+{extra} sets per exercise" if extra else "none yet")}
-    * **Rest between sets:** {f"{abs(rest)} seconds shorter than normal" if rest < 0 else "normal"}
-    * **Extra reps:** {f"+{reps} rep on each set" if reps == 1 else (f"+{reps} reps on each set" if reps else "none yet")}
+    * **Sets:** {sets} per exercise (fixed)
+    * **Reps with weights:** {reps_now} per set now (starts at {low}, goes up to {top_weighted}, then you add weight and start again at {low})
+    * **Reps without weights:** {bodyweight_now} per set now (starts at {low}, can go up to {top_bodyweight})
+    * **Times you were asked to add weight:** {prog['weight_stage']}
     * **Harder exercises:** {"unlocked - you may now see exercises one level up" if prog['difficulty_bump'] else "not yet - you only get exercises at your level"}
-    * **Weeks that felt just right:** {streak} of {STREAK_FOR_REP_BUMP} needed in a row
     """)
-    with st.expander("What do these mean?"):
+    with st.expander("How does this work?"):
         st.markdown(f"""
-        * **Weeks that felt just right:** after each workout you rate how hard it was. If you rate
-          **Perfect** for {STREAK_FOR_REP_BUMP} week in a row, your plan adds 1 rep to every set.
-          Rating **Too Easy** adds a set or shortens rest. Rating **Too Hard** steps one change back.
-        * **Harder exercises:** a tougher version of the exercises, one level above the level you picked.
-          They appear only after your plan has been made harder several times.
-        * **Extra sets / extra reps / shorter rest:** small steps that make each workout a bit more demanding,
-          so your body keeps improving. Beginners get at most +1 extra set.
+        * After each workout you rate how hard it was. At the end of the week your plan changes:
+          **Perfect** adds {PERFECT_REP_STEP} rep per set, **Too Easy** adds {EASY_REP_STEP} reps per set,
+          **Too Hard** takes 1 rep away.
+        * When you reach the top of the rep target ({top_weighted} reps) and the week still feels fine,
+          it is time to **add weight**: pick the next size up and go back to {low} reps.
+        * Exercises without weights (push-ups, planks, bands) cannot get heavier, so they simply keep adding reps.
+        * **Harder exercises** are tougher versions, one level above the level you picked.
+          They unlock the first time you are asked to add weight.
+        * Always choose a weight you can lift comfortably with good form for every rep.
         """)
+
+    st.subheader("My Weights")
+    log = pd.DataFrame(st.session_state.weight_log)
+    if log.empty:
+        st.write("Type the weights you use in the **Weight (kg)** column of your plan to follow them here.")
+    else:
+        log = log.sort_values("week")
+        summary = log.groupby("exercise").agg(first_week=("week", "first"), start=("kg", "first"),
+                                              now=("kg", "last"), best=("kg", "max")).reset_index()
+        summary["change"] = summary["now"] - summary["start"]
+        improved = int((summary["change"] > 0).sum())
+        with st.container(border=True):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Exercises tracked", len(summary))
+            c2.metric("Exercises with more weight", improved)
+            c3.metric("Total weight added", f"{summary['change'].clip(lower=0).sum():.1f} kg")
+        st.dataframe(
+            summary.rename(columns={"exercise": "Exercise", "first_week": "Since week", "start": "Start (kg)",
+                                    "now": "Now (kg)", "best": "Best (kg)", "change": "Change (kg)"}),
+            hide_index=True, use_container_width=True,
+            column_config={c: st.column_config.NumberColumn(format="%.1f")
+                           for c in ["Start (kg)", "Now (kg)", "Best (kg)", "Change (kg)"]})
+        choice = st.selectbox("Show weight by week for:", sorted(summary["exercise"]))
+        history = log[log["exercise"] == choice].set_index("week")["kg"]
+        if len(history) > 1:
+            st.line_chart(history, y_label="kg", x_label="Week")
+        else:
+            st.caption(f"{choice}: {history.iloc[0]:.1f} kg in week {history.index[0]}. "
+                       "The chart appears when you have typed a weight in two different weeks.")
 
     st.subheader("Progression History")
     if prog["history"]:
@@ -1592,7 +1652,8 @@ def page_learn():
         ("Movement Terms", "Bilateral", "A bilateral exercise uses both sides of the body together.", "A barbell squat, bench press, or standard push-up is bilateral."),
         ("Plan Structure", "Warm-up", "A warm-up raises body temperature and prepares the joints and muscles for the main workout.", "Use light movement and rehearsal sets before demanding lifts."),
         ("Plan Structure", "Finisher", "A finisher is a short final block, often cardio or flexibility work, completed after resistance training.", "Brisk walking or a chest stretch can appear at the end of a session."),
-        ("Progression", "Progressive Overload", "Progressive overload is a gradual increase in training challenge as your body adapts.", "You may add a repetition, a set, a little weight, or improve technique over time."),
+        ("Progression", "Progressive Overload", "Progressive overload is a gradual increase in training challenge as your body adapts.", "In this app your sets stay the same. You add a repetition each week, and when you reach the top of the rep target you add a little weight and start again from the lower reps."),
+        ("Progression", "Choosing Your Weight", "Pick a weight you can lift comfortably for every repetition with good form. The last two repetitions should feel hard but still controlled.", "If you cannot finish the reps, go lighter. If all reps feel very easy, rate the workout Too Easy. Type the weight you use in the Weight (kg) column of your plan."),
         ("Progression", "Recovery", "Recovery is the time your body needs to repair and adapt between training sessions.", "Sleep, nutrition, rest days, and manageable training volume all support recovery."),
     ]
 
@@ -1600,7 +1661,7 @@ def page_learn():
         ("Build consistency before complexity", "The most productive program is one you can repeat week after week. Start with a schedule that fits your life, learn the core movements, and avoid changing exercises or methods every session. Complex methods are optional; regular training and steady effort matter more for most healthy adults.", "ACSM resistance-training guidelines", "https://acsm.org/resistance-training-guidelines-update-2026/"),
         ("Train every major muscle group", "A balanced program should include the legs, hips, back, chest, abdomen, shoulders, and arms. Covering these areas supports general strength and reduces the chance that your plan is dominated by only the muscles you enjoy training. The app uses this principle when building its weekly split.", "U.S. Physical Activity Guidelines", "https://www.health.gov/PAguidelines/pdf/paguide.pdf"),
         ("Strength train at least twice each week", "For general health, muscle-strengthening work for all major muscle groups should be included on at least two days each week. More days can work well when volume is distributed sensibly, but beginning with a repeatable two-day foundation is better than an unsustainable ambitious plan.", "U.S. Physical Activity Guidelines", "https://www.health.gov/PAguidelines/pdf/paguide.pdf"),
-        ("Progress gradually", "Increase only one or two training demands at a time: for example, a small amount of weight, one extra repetition, or one additional set. Starting too hard and raising volume, intensity, and frequency together makes it harder to recover and makes it difficult to identify what caused pain or excessive fatigue.", "U.S. Physical Activity Guidelines", "https://www.health.gov/PAguidelines/pdf/paguide.pdf"),
+        ("Progress gradually", "Increase only one or two training demands at a time: for example, one extra repetition or a small amount of weight. This app keeps your sets the same and raises the reps first, then the weight. Starting too hard and raising volume, intensity, and frequency together makes it harder to recover and makes it difficult to identify what caused pain or excessive fatigue.", "U.S. Physical Activity Guidelines", "https://www.health.gov/PAguidelines/pdf/paguide.pdf"),
         ("Match training to the goal", "Strength development generally benefits from heavier loading and lower repetition ranges, while muscle growth is supported by sufficient weekly training volume. Use the plan as a starting point, then select loads that let you complete the prescribed repetitions with controlled technique.", "ACSM resistance-training guidelines", "https://acsm.org/resistance-training-guidelines-update-2026/"),
         ("Accumulate useful weekly volume", "Muscle growth is influenced by the amount of challenging work a muscle receives over the week, not by one exhausting workout alone. Spread your work across sessions so that quality repetitions remain high and each muscle can recover before it is trained hard again.", "ACSM resistance-training guidelines", "https://acsm.org/resistance-training-guidelines-update-2026/"),
         ("Use controlled repetitions", "Do not rush the lowering phase or let momentum replace muscular control. A controlled repetition makes it easier to maintain positions, notice form breakdown, and use a load that matches your current ability. If control disappears, reduce the load, range, or repetition target.", "ACSM injury-prevention guidance", "https://www.acsm.org/docs/default-source/files-for-resource-library/smb-resistance-training-and-injury-prevention.pdf"),
