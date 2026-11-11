@@ -629,6 +629,12 @@ def assemble_weekly_plan(ranked, profile, feedback, keep=None):
             ascending=[True, False, True, True, False])
 
         resistance_pool = candidates[candidates["exercise_category"] == "resistance"]
+        # Exercises the user reported as Too Heavy are left out while today's muscle groups still
+        # have other options. (If nothing else exists for them, they stay as the last resort.)
+        too_heavy_names = {n for n, t in feedback.items() if t.get(TAG_TOO_HEAVY, 0) > 0}
+        lighter_pool = resistance_pool[~resistance_pool["exercise_name"].isin(too_heavy_names)]
+        if lighter_pool["major_muscle_group"].isin(session["groups"]).any():
+            resistance_pool = lighter_pool
 
         # --- reserve time for the finisher (cardio / flexibility), if any ---
         finisher_row, finisher_rx = None, None
