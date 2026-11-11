@@ -570,10 +570,13 @@ def pick_support_exercises(pool, groups, target_seconds, section, exclude_names,
     return picked
 
 
-def assemble_weekly_plan(ranked, profile, feedback):
+def assemble_weekly_plan(ranked, profile, feedback, keep=None):
     """STEP C: build the weekly schedule.
     Each day = Warm-up -> Main (compound first) -> Finisher -> Cooldown, sized to
-    fill the user's chosen session length using the time formula."""
+    fill the user's chosen session length using the time formula.
+    `keep` is last week's plan: its main exercises are repeated on the same days so the user
+    can progress on them. Only exercises that are no longer allowed (joint pain) or were
+    reported Too Heavy are replaced, and the time window never removes a kept exercise."""
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     n_days = int(np.clip(profile["preferred_days_per_week"], 2, 6))
     session_minutes = int(np.clip(profile.get("session_duration_minutes", 60), 30, 90))
@@ -646,11 +649,12 @@ def assemble_weekly_plan(ranked, profile, feedback):
 
         # --- pick the main exercises ---
         chosen, session_muscles, state = [], set(), {"time": 0}
+        main_cap = MAX_RESISTANCE_EXERCISES      # most main exercises today
 
-        def try_add(row, enforce_variety=True):
+        def try_add(row, enforce_variety=True, ignore_time=False):
             """Add `row` if it is new, passes the variety rule AND fits in the time left."""
             name = row["exercise_name"]
-            if len(chosen) >= MAX_RESISTANCE_EXERCISES:
+            if len(chosen) >= main_cap:
                 return False
             if any(item["row"]["exercise_name"] == name for item in chosen):
                 return False
@@ -660,7 +664,7 @@ def assemble_weekly_plan(ranked, profile, feedback):
                 return False
             rx = rx_for(row, "Main")
             cost = rx["seconds"] + rx["setup"]
-            if state["time"] + cost > main_budget:
+            if not ignore_time and state["time"] + cost > main_budget:
                 return False
             chosen.append({"row": row, "rx": rx})
             state["time"] += cost
@@ -670,6 +674,22 @@ def assemble_weekly_plan(ranked, profile, feedback):
 
         def unilateral_count():
             return sum(1 for item in chosen if item["row"]["movement_type"] == "unilateral")
+
+        # Repeat last week's main exercises for this day (same order), whatever the time says.
+        if keep is not None and not keep.empty:
+            last_week = keep[(keep["Day"] == day) & (keep["Section"] == "Main")]["Exercise"]
+            if len(last_week):
+                main_cap = len(last_week)          # only replacements, never extra exercises
+            for name in last_week:
+                match = candidates[candidates["exercise_name"] == name]
+                if match.empty or feedback.get(name, {}).get(TAG_TOO_HEAVY, 0) > 0:
+                    continue                       # banned or reported too heavy: replaced below
+                row = match.iloc[0]
+                rx = rx_for(row, "Main")
+                chosen.append({"row": row, "rx": rx})
+                state["time"] += rx["seconds"] + rx["setup"]
+                if str(row["exercise_category"]).lower() == "resistance":
+                    session_muscles.add(str(row["target_muscle"]).lower())
 
         # Only exercises for today's muscle groups may enter the main block, so an
         # Upper Body day never gets leg exercises (and the other way round).
@@ -700,9 +720,19 @@ def assemble_weekly_plan(ranked, profile, feedback):
         for enforce in (True, False):
             queue = [row for _, row in today_pool.iterrows()]
             idx = 0
-            while idx < len(queue) and len(chosen) < MAX_RESISTANCE_EXERCISES and state["time"] < main_budget:
+            while idx < len(queue) and len(chosen) < main_cap and state["time"] < main_budget:
                 try_add(queue[idx], enforce)
                 idx += 1
+
+        # A replaced exercise (joint pain / too heavy) is always replaced, even if the day is now a
+        # few minutes longer than the time window, so the day keeps the same number of exercises.
+        if keep is not None:
+            for enforce in (True, False):
+                for _, row in today_pool.iterrows():
+                    if len(chosen) >= main_cap:
+                        break
+                    if feedback.get(row["exercise_name"], {}).get(TAG_TOO_HEAVY, 0) == 0:
+                        try_add(row, enforce, ignore_time=True)
 
         # Fallback: if there is no strength option at all, allow any non-warm-up exercise.
         if not chosen:
@@ -759,8 +789,9 @@ def assemble_weekly_plan(ranked, profile, feedback):
     return pd.DataFrame(rows_out)
 
 
-def generate_plan():
-    """Glue: translate the UI profile for the engine and run the whole pipeline."""
+def generate_plan(keep=None):
+    """Glue: translate the UI profile for the engine and run the whole pipeline.
+    Pass last week's plan as `keep` to repeat its main exercises."""
     p = st.session_state.profile
     f = st.session_state.feedback
 
@@ -780,9 +811,7 @@ def generate_plan():
 
     safe_exercises = safety_filter(exercise_kb, backend_profile, f)
     ranked_exercises = rank_exercises(safe_exercises, backend_profile, f)
-    weekly_plan = assemble_weekly_plan(ranked_exercises, backend_profile, f)
-
-    return weekly_plan
+    return assemble_weekly_plan(ranked_exercises, backend_profile, f, keep)
 
 
 # =============================================================================
@@ -877,6 +906,8 @@ def finish_week():
     user_goal = goal_key(str(profile.get("goal", "General Fitness")).lower().replace(" ", "_"))
     low, top_weighted, top_bodyweight = rep_limits(user_goal, level_rank)
     can_unlock = level_rank + prog["difficulty_bump"] < 3      # is there a harder level left?
+    bump_before = prog["difficulty_bump"]
+    last_plan = st.session_state.weekly_plan
     messages, weight_up = evaluate_week(prog, list(st.session_state.week_feedback.values()),
                                         top_weighted - low, top_bodyweight - low, can_unlock)
     if weight_up:
@@ -886,7 +917,10 @@ def finish_week():
     st.session_state.week_number += 1
     st.session_state.week_feedback = {}
     st.session_state.weight_drafts = {}      # weights typed for skipped (unrated) days are not counted
-    st.session_state.weekly_plan = generate_plan()
+    # Same exercises next week so the user can progress on them. Only when harder variants
+    # unlock (or the difficulty is lowered after a Too Hard week) is the plan chosen again.
+    same_level = prog["difficulty_bump"] == bump_before
+    st.session_state.weekly_plan = generate_plan(keep=last_plan if same_level else None)
     return messages
 
 
